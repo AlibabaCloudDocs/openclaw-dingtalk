@@ -1,0 +1,46 @@
+#!/usr/bin/expect -f
+# 测试交互式主菜单
+
+set timeout 30
+
+# 获取脚本路径
+if {[llength $argv] > 0} {
+    set script_path [lindex $argv 0]
+} else {
+    set script_path "./openclaw_installer.sh"
+}
+
+# 启动脚本
+spawn bash $script_path --menu
+
+# 等待菜单显示
+expect {
+    -re "选择操作|Select.*operation|◆.*:" {
+        puts "\n\[OK\] 菜单显示成功"
+    }
+    timeout {
+        puts "\n\[FAIL\] 等待菜单超时"
+        exit 1
+    }
+}
+
+# 选择 "查看状态" 选项 (通常是第 4 个选项，按 j 下移)
+# 发送 j 键多次下移，然后回车
+send "jjj\r"
+
+# 等待状态信息或任何输出
+expect {
+    -re "Openclaw|状态|status|version|版本|not installed|未安装" {
+        puts "\n\[OK\] 状态显示成功"
+    }
+    timeout {
+        puts "\n\[FAIL\] 状态显示超时"
+        exit 1
+    }
+}
+
+puts "\n=========================================="
+puts "  主菜单交互测试通过"
+puts "=========================================="
+
+exit 0

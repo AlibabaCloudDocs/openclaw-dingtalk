@@ -1,0 +1,74 @@
+{
+  "name": "clawdbot-dingtalk",
+  "version": "0.2.11",
+  "description": "DingTalk (钉钉) channel plugin for Openclaw - enables AI agent messaging via DingTalk Stream API",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc --skipLibCheck",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "release:latest": "npm publish --tag latest",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "publishConfig": {
+    "tag": "beta"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "dingtalk",
+    "钉钉",
+    "chatbot",
+    "ai-agent",
+    "enterprise-messaging"
+  ],
+  "author": "Aliyun",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aliyun/tech-solution-clawdbot-extension.git",
+    "directory": "extensions/dingtalk"
+  },
+  "bugs": {
+    "url": "https://github.com/aliyun/tech-solution-clawdbot-extension/issues"
+  },
+  "homepage": "https://github.com/aliyun/tech-solution-clawdbot-extension#readme",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "dingtalk-stream": "^2.1.4",
+    "ws": "^8.18.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.1.0"
+  }
+}

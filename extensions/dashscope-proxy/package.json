@@ -1,0 +1,66 @@
+{
+    "name": "clawdbot-dashscope-proxy",
+    "version": "0.1.0",
+    "description": "DashScope thinking proxy plugin for OpenClaw - injects enable_thinking for supported models",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist",
+        "openclaw.plugin.json"
+    ],
+    "openclaw": {
+        "extensions": [
+            "./dist/index.js"
+        ]
+    },
+    "scripts": {
+        "build": "tsc",
+        "clean": "rm -rf dist",
+        "prepublishOnly": "npm run clean && npm run build",
+        "release:latest": "npm publish --tag latest",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:coverage": "vitest run --coverage"
+    },
+    "publishConfig": {
+        "tag": "beta"
+    },
+    "keywords": [
+        "openclaw",
+        "openclaw-plugin",
+        "dashscope",
+        "qwen",
+        "proxy",
+        "thinking"
+    ],
+    "author": "Aliyun",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/aliyun/tech-solution-clawdbot-extension.git",
+        "directory": "extensions/dashscope-proxy"
+    },
+    "bugs": {
+        "url": "https://github.com/aliyun/tech-solution-clawdbot-extension/issues"
+    },
+    "homepage": "https://github.com/aliyun/tech-solution-clawdbot-extension#readme",
+    "engines": {
+        "node": ">=20.0.0"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "@vitest/coverage-v8": "^3.0.0",
+        "typescript": "^5.7.0",
+        "vitest": "^3.0.0"
+    },
+    "peerDependencies": {
+        "openclaw": ">=2026.1.0"
+    }
+}

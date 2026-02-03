@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build output
+dist/
+build/*/node_modules/
+
+# Docker
+*.pid
+clawdbot-ref
+clawdbot
+openclaw
+dingtalk-stream-sdk-nodejs
+dingtalk-moltbot-connector
+
+
+.sisyphus/
+
+# Test credentials
+tests/credentials.env
+tests/test.log
+
+# Test coverage
+coverage/

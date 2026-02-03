@@ -1,0 +1,11 @@
+{
+  "id": "clawdbot-dingtalk",
+  "channels": [
+    "clawdbot-dingtalk"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
