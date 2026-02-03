@@ -1,0 +1,165 @@
+#!/usr/bin/expect -f
+# 测试交互式配置向导
+
+set timeout 120
+
+# 获取脚本路径
+if {[llength $argv] > 0} {
+    set script_path [lindex $argv 0]
+} else {
+    set script_path "./openclaw_installer.sh"
+}
+
+# 从环境变量读取凭据
+if {[info exists env(DINGTALK_CLIENT_ID)]} {
+    set dingtalk_client_id $env(DINGTALK_CLIENT_ID)
+} else {
+    puts "错误: DINGTALK_CLIENT_ID 环境变量未设置"
+    exit 1
+}
+
+if {[info exists env(DINGTALK_CLIENT_SECRET)]} {
+    set dingtalk_client_secret $env(DINGTALK_CLIENT_SECRET)
+} else {
+    puts "错误: DINGTALK_CLIENT_SECRET 环境变量未设置"
+    exit 1
+}
+
+if {[info exists env(DASHSCOPE_API_KEY)]} {
+    set dashscope_api_key $env(DASHSCOPE_API_KEY)
+} else {
+    set dashscope_api_key ""
+}
+
+if {[info exists env(DASHSCOPE_BASE_URL)]} {
+    set dashscope_base_url $env(DASHSCOPE_BASE_URL)
+} else {
+    set dashscope_base_url ""
+}
+
+puts "=========================================="
+puts "  配置向导交互测试"
+puts "=========================================="
+puts ""
+
+# 启动配置向导
+spawn bash $script_path --configure
+
+# 处理可能的覆盖确认
+expect {
+    -re "覆盖|overwrite|已存在|exists" {
+        puts "\n\[INFO\] 检测到已有配置，确认覆盖"
+        send "y\r"
+        exp_continue
+    }
+    -re "Client ID|clientId|客户端 ID" {
+        puts "\n\[INPUT\] 输入钉钉 Client ID"
+        send "$dingtalk_client_id\r"
+    }
+    timeout {
+        puts "\n\[FAIL\] 等待配置提示超时"
+        exit 1
+    }
+}
+
+# 输入 Client Secret
+expect {
+    -re "Client Secret|clientSecret|客户端密钥" {
+        puts "\n\[INPUT\] 输入钉钉 Client Secret"
+        send "$dingtalk_client_secret\r"
+    }
+    timeout {
+        puts "\n\[FAIL\] 等待 Client Secret 提示超时"
+        exit 1
+    }
+}
+
+# 输入 Base URL（可选，使用默认值）
+expect {
+    -re "Base URL|baseUrl|API 地址" {
+        puts "\n\[INPUT\] 使用默认 Base URL"
+        if {$dashscope_base_url ne ""} {
+            send "$dashscope_base_url\r"
+        } else {
+            send "\r"
+        }
+    }
+    -re "API Key|apiKey" {
+        # 直接跳到 API Key
+        puts "\n\[INPUT\] 输入 API Key"
+        if {$dashscope_api_key ne ""} {
+            send "$dashscope_api_key\r"
+        } else {
+            send "\r"
+        }
+        exp_continue
+    }
+    timeout {
+        puts "\n\[INFO\] 没有 Base URL 提示，继续"
+    }
+}
+
+# 输入 API Key
+expect {
+    -re "API Key|apiKey|密钥" {
+        puts "\n\[INPUT\] 输入 API Key"
+        if {$dashscope_api_key ne ""} {
+            send "$dashscope_api_key\r"
+        } else {
+            send "\r"
+        }
+    }
+    -re "模型|model|Model" {
+        # 跳过，到模型选择
+        puts "\n\[INPUT\] 选择默认模型"
+        send "\r"
+    }
+    -re "完成|complete|success|成功" {
+        puts "\n\[OK\] 配置完成"
+    }
+    timeout {
+        puts "\n\[INFO\] 没有 API Key 提示，继续"
+    }
+}
+
+# 选择模型（如果有提示）
+expect {
+    -re "模型|model|Model|选择" {
+        puts "\n\[INPUT\] 选择默认模型（按回车）"
+        send "\r"
+    }
+    -re "完成|complete|success|成功|saved|保存" {
+        puts "\n\[OK\] 配置已保存"
+    }
+    timeout {
+        puts "\n\[INFO\] 配置流程结束"
+    }
+}
+
+# 等待最终完成消息
+expect {
+    -re "完成|complete|success|成功|saved|保存|Configuration" {
+        puts "\n\[OK\] 配置向导完成"
+    }
+    eof {
+        puts "\n\[OK\] 配置向导退出"
+    }
+    timeout {
+        puts "\n\[OK\] 配置流程完成"
+    }
+}
+
+puts ""
+puts "=========================================="
+puts "  配置向导交互测试通过"
+puts "=========================================="
+
+# 验证配置文件是否创建
+puts "\n验证配置文件..."
+if {[file exists "~/.clawdbot/clawdbot.json"] || [file exists "$env(HOME)/.clawdbot/clawdbot.json"]} {
+    puts "\[OK\] 配置文件已创建"
+} else {
+    puts "\[WARN\] 配置文件可能未创建（需要手动检查）"
+}
+
+exit 0

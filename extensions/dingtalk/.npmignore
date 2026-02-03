@@ -1,0 +1,27 @@
+# Source files (TypeScript)
+*.ts
+!dist/**/*.d.ts
+
+# Config files
+tsconfig.json
+.eslintrc*
+.prettierrc*
+
+# Development
+node_modules/
+.git/
+.gitignore
+.DS_Store
+
+# Test files
+__tests__/
+*.test.ts
+*.spec.ts
+coverage/
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts we don't need
+*.tsbuildinfo
