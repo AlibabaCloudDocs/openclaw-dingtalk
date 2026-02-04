@@ -82,7 +82,7 @@ export function normalizeThinkLevel(raw?: string): ThinkLevel | undefined {
     return "off";
   }
   if (["on", "enable", "enabled"].includes(key)) {
-    return "low";
+    return "high";
   }
   if (["min", "minimal"].includes(key)) {
     return "minimal";
@@ -137,4 +137,3 @@ export function extractThinkOnceDirective(
     hasDirective: extracted.hasDirective,
   };
 }
-

@@ -404,6 +404,23 @@ describe("monitorDingTalkProvider", () => {
     }
   });
 
+  it("recognizes /reasoning command", async () => {
+    const runtime = getDingTalkRuntime();
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    if (capturedCallback) {
+      await capturedCallback(createMockMessage({ text: "/reasoning on Hello" }));
+      await new Promise((r) => setTimeout(r, 50));
+
+      const call = (runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(call[0].ctx.CommandAuthorized).toBe(true);
+    }
+  });
+
   it("injects senderStaffId in BodyForAgent", async () => {
     const runtime = getDingTalkRuntime();
 
@@ -435,7 +452,7 @@ describe("monitorDingTalkProvider", () => {
 
       const calls = (runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>).mock.calls;
       expect(calls.length).toBe(3);
-      expect(calls[0]?.[0]?.ctx?.CommandBody).toBe("/think low");
+      expect(calls[0]?.[0]?.ctx?.CommandBody).toBe("/think high");
       expect(calls[1]?.[0]?.ctx?.CommandBody).toBe("Hello");
       expect(calls[2]?.[0]?.ctx?.CommandBody).toBe("/think off");
     }
