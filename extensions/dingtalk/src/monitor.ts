@@ -20,7 +20,7 @@ import { sendFileMessage } from "./api/send-message.js";
 import { extractThinkDirective, extractThinkOnceDirective, type ThinkLevel } from "./util/think-directive.js";
 import { parseMediaProtocol, hasMediaTags, replaceMediaTags } from "./media-protocol.js";
 import { processMediaItems, uploadMediaItem } from "./send/media-sender.js";
-import { DEFAULT_MEDIA_SYSTEM_PROMPT } from "./system-prompt.js";
+import { DEFAULT_DINGTALK_SYSTEM_PROMPT, buildSenderContext } from "./system-prompt.js";
 
 export interface MonitorDingTalkOpts {
   account: ResolvedDingTalkAccount;
@@ -277,7 +277,7 @@ export async function monitorDingTalkProvider(
 
     // Build inbound context for Clawdbot
     // Inject senderStaffId into BodyForAgent so AI can use it for cron tasks
-    const senderContext = `[钉钉消息 | senderStaffId: ${chat.senderId}]\n`;
+    const senderContext = buildSenderContext(chat.senderId) + "\n";
 
     // One-shot thinking directive: /t! on|off|minimal|low|medium|high ...
     // This is handled by the channel (not OpenClaw), so we strip it from the prompt.
@@ -356,14 +356,14 @@ export async function monitorDingTalkProvider(
     const effectiveText = hasOnceThink ? onceThink.cleaned : chat.text;
     const messageBody = effectiveText + fileContext + imageContext;
 
-    // Build media protocol system prompt (injected into agent context)
-    const mediaSystemPrompt = `${DEFAULT_MEDIA_SYSTEM_PROMPT}\n\n---\n\n`;
+    // Build DingTalk channel system prompt (injected into agent context)
+    const channelSystemPrompt = `${DEFAULT_DINGTALK_SYSTEM_PROMPT}\n\n---\n\n`;
 
     const ctx = {
       Body: messageBody,
       RawBody: effectiveText,
       CommandBody: effectiveText,
-      BodyForAgent: mediaSystemPrompt + senderContext + messageBody,
+      BodyForAgent: channelSystemPrompt + senderContext + messageBody,
       BodyForCommands: effectiveText,
       From: chat.senderId,
       To: chat.conversationId,
@@ -399,8 +399,8 @@ export async function monitorDingTalkProvider(
         const trimmedText = payload.text?.trim();
         const derivedMediaUrl =
           !explicitMediaUrl &&
-          trimmedText &&
-          /^(?:\.{1,2}\/|\/|~\/|file:\/\/|MEDIA:|attachment:\/\/)/.test(trimmedText)
+            trimmedText &&
+            /^(?:\.{1,2}\/|\/|~\/|file:\/\/|MEDIA:|attachment:\/\/)/.test(trimmedText)
             ? trimmedText
             : undefined;
         const mediaUrl = explicitMediaUrl || derivedMediaUrl;
