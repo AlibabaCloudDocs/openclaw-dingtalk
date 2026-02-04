@@ -1,9 +1,10 @@
 # clawdbot-dashscope-proxy
 
-DashScope provider plugin for OpenClaw (native thinking, no proxy).
+DashScope provider plugin for OpenClaw (local thinking proxy).
 
-This plugin registers a DashScope provider and uses OpenClaw’s native `/think` command to enable
-thinking mode for supported Qwen models. No local HTTP proxy is required.
+DashScope thinking models require `enable_thinking=true`. This plugin starts a lightweight local
+proxy that injects `enable_thinking` based on OpenClaw’s `/think` level, while still using the
+DashScope OpenAI-compatible API.
 
 ## Install
 
@@ -27,12 +28,36 @@ Follow the prompts for:
 
 ### Option B: Manual Config
 
+1) Enable the proxy service (optional overrides shown):
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "clawdbot-dashscope-proxy": {
+        "enabled": true,
+        "config": {
+          "bind": "127.0.0.1",
+          "port": 18788,
+          "targetBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+          "thinkingEnabled": true,
+          "thinkingBudget": 0,
+          "thinkingModels": "qwen3-max-2026-01-23,qwen3-coder-plus"
+        }
+      }
+    }
+  }
+}
+```
+
+2) Point the DashScope provider at the local proxy:
+
 ```json
 {
   "models": {
     "providers": {
       "dashscope": {
-        "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "baseUrl": "http://127.0.0.1:18788/v1",
         "apiKey": "sk-xxx",
         "api": "openai-completions",
         "models": [
@@ -64,11 +89,10 @@ Use OpenClaw’s native command to enable thinking per session:
 
 ## Migration Notes
 
-If you previously used the local proxy:
+If you previously used the local proxy, keep the proxy base URL:
 
-- Remove any proxy base URL such as `http://127.0.0.1:18788/v1`.
-- Use the direct DashScope base URL instead.
-- You can delete old `plugins.entries.clawdbot-dashscope-proxy` proxy config.
+- Ensure your provider base URL points to the proxy (`http://127.0.0.1:18788/v1` by default).
+- The proxy forwards to DashScope and injects `enable_thinking` when `/think` is not off.
 
 ## Start Gateway
 

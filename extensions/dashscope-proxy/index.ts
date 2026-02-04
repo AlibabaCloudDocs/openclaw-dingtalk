@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
 import { createDashScopeProvider } from "./src/provider.js";
+import { createDashScopeProxyService } from "./src/service.js";
 
 const plugin = {
     id: "clawdbot-dashscope-proxy",
@@ -8,6 +9,7 @@ const plugin = {
     description: "DashScope provider plugin for OpenClaw (native thinking)",
     register(api: OpenClawPluginApi) {
         api.registerProvider(createDashScopeProvider());
+        api.registerService(createDashScopeProxyService());
     },
 };
 

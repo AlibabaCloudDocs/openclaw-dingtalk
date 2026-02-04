@@ -1,10 +1,41 @@
 {
     "id": "clawdbot-dashscope-proxy",
     "name": "DashScope",
-    "description": "DashScope provider plugin for OpenClaw (native thinking)",
+    "description": "DashScope provider plugin for OpenClaw (local thinking proxy)",
     "configSchema": {
         "type": "object",
         "additionalProperties": false,
-        "properties": {}
+        "properties": {
+            "bind": {
+                "type": "string",
+                "default": "127.0.0.1"
+            },
+            "port": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 65535,
+                "default": 18788
+            },
+            "targetBaseUrl": {
+                "type": "string",
+                "default": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            },
+            "thinkingEnabled": {
+                "type": "boolean",
+                "default": true
+            },
+            "thinkingBudget": {
+                "type": "number",
+                "minimum": 0,
+                "default": 0
+            },
+            "thinkingModels": {
+                "type": "string"
+            },
+            "logRequestBody": {
+                "type": "boolean",
+                "default": false
+            }
+        }
     }
 }

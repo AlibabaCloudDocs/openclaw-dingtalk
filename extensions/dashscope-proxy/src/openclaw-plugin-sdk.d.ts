@@ -50,8 +50,10 @@ declare module "openclaw/plugin-sdk" {
         error: (message: string) => void;
     };
 
+    export type OpenClawConfig = any;
+
     export type OpenClawPluginServiceContext = {
-        config: unknown;
+        config: OpenClawConfig;
         workspaceDir?: string;
         stateDir: string;
         logger: PluginLogger;
