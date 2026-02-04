@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # 远程服务器配置
-REMOTE_HOST="${REMOTE_HOST:-REDACTED_IP}"
+REMOTE_HOST="${REMOTE_HOST:?Error: REMOTE_HOST environment variable is required}"
 REMOTE_USER="${REMOTE_USER:-root}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 REMOTE_DIR="${REMOTE_DIR:-/tmp/clawdbot-tests}"

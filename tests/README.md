@@ -52,13 +52,13 @@ bash run_all.sh
 ```bash
 # 1. 同步文件到远程服务器
 rsync -avz -e "ssh -i ~/.ssh/id_ed25519" \
-  tests/ root@REDACTED_IP:/tmp/clawdbot-tests/
+  tests/ root@<remote-ip>:/tmp/clawdbot-tests/
 
 scp -i ~/.ssh/id_ed25519 clawdbot_install.sh \
-  root@REDACTED_IP:/tmp/clawdbot-tests/
+  root@<remote-ip>:/tmp/clawdbot-tests/
 
 # 2. 连接到远程服务器
-ssh -i ~/.ssh/id_ed25519 root@REDACTED_IP
+ssh -i ~/.ssh/id_ed25519 root@<remote-ip>
 
 # 3. 准备环境
 cd /tmp/clawdbot-tests
