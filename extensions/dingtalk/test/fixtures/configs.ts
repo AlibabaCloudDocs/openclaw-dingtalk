@@ -27,6 +27,7 @@ export const BASIC_ACCOUNT: ResolvedDingTalkAccount = {
   },
   allowFrom: [],
   requireMention: true,
+  isolateContextPerUserInGroup: false,
   mentionBypassUsers: [],
   showToolStatus: false,
   showToolResult: false,

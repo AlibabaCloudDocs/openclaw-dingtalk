@@ -190,6 +190,12 @@ describe("buildSessionKey", () => {
     expect(key).toBe("agent:main:dingtalk:group:cid123456");
   });
 
+  it("isolates group session key by sender when enabled", () => {
+    const chat = extractChatbotMessage(BASIC_CHATBOT_MESSAGE)!;
+    const key = buildSessionKey(chat, "main", { isolateGroupBySender: true });
+    expect(key).toBe("agent:main:dingtalk:group:cid123456:user:user001");
+  });
+
   it("builds DM session key", () => {
     const chat = extractChatbotMessage(DM_MESSAGE)!;
     const key = buildSessionKey(chat);

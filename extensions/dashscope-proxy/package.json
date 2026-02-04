@@ -30,6 +30,7 @@
         "test:coverage": "vitest run --coverage"
     },
     "publishConfig": {
+        "registry": "https://registry.npmjs.org",
         "tag": "beta"
     },
     "keywords": [
