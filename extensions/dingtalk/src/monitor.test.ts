@@ -78,6 +78,7 @@ vi.mock("./api/media-upload.js", async () => {
 
 import { monitorDingTalkProvider } from "./monitor.js";
 import { getDingTalkRuntime } from "./runtime.js";
+import { DINGTALK_CHANNEL_ID } from "./config-schema.js";
 import { BASIC_ACCOUNT, FILTERED_ACCOUNT, PREFIX_ACCOUNT, VERBOSE_ACCOUNT } from "../test/fixtures/configs.js";
 
 describe("monitorDingTalkProvider", () => {
@@ -184,8 +185,13 @@ describe("monitorDingTalkProvider", () => {
 
       expect(ctx.Body).toBe("Test message");
       expect(ctx.SessionKey).toContain("dingtalk:group:");
-      expect(ctx.Provider).toBe("dingtalk");
-      expect(ctx.Surface).toBe("dingtalk");
+      expect(ctx.Provider).toBe(DINGTALK_CHANNEL_ID);
+      expect(ctx.Surface).toBe(DINGTALK_CHANNEL_ID);
+
+      // Ensure Openclaw block streaming flushes each block immediately by default.
+      // (This is accomplished by forcing chunkMode="newline" on the canonical channel id.)
+      const cfg = call[0].cfg as any;
+      expect(cfg?.channels?.[DINGTALK_CHANNEL_ID]?.chunkMode).toBe("newline");
     }
   });
 

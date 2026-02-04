@@ -13,6 +13,7 @@ import { sendReplyViaSessionWebhook, sendImageViaSessionWebhook, sendImageWithMe
 import { convertMarkdownForDingTalk } from "./send/markdown.js";
 import { stripDirectiveTags, isOnlyDirectiveTags } from "./util/directive-tags.js";
 import { applyResponsePrefix, isGroupChatType, shouldEnforcePrefix } from "./util/prefix.js";
+import { DINGTALK_CHANNEL_ID } from "./config-schema.js";
 import { downloadMedia, uploadMedia } from "./api/media.js";
 import { uploadMediaToOAPI } from "./api/media-upload.js";
 import { sendFileMessage } from "./api/send-message.js";
@@ -76,6 +77,51 @@ function parseVerboseOverride(text?: string): VerboseOverride | undefined {
 }
 
 /**
+ * Ensure Openclaw can resolve channel-specific streaming config for this plugin.
+ *
+ * - Canonical channel id is `clawdbot-dingtalk` (DINGTALK_CHANNEL_ID).
+ * - Older configs may still use `channels.dingtalk`.
+ * - For block streaming, Openclaw's coalescer flushes per-enqueue when `chunkMode="newline"`.
+ *   We default to newline here (unless explicitly configured) so block streaming actually streams.
+ */
+function ensureDingTalkStreamingConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+  const channelsRaw = (cfg as { channels?: unknown } | undefined)?.channels;
+  const channels =
+    channelsRaw && typeof channelsRaw === "object"
+      ? (channelsRaw as Record<string, unknown>)
+      : {};
+
+  const canonicalRaw = channels[DINGTALK_CHANNEL_ID];
+  const legacyRaw = (channels as Record<string, unknown>).dingtalk;
+  const canonical =
+    canonicalRaw && typeof canonicalRaw === "object"
+      ? (canonicalRaw as Record<string, unknown>)
+      : undefined;
+  const legacy =
+    legacyRaw && typeof legacyRaw === "object" ? (legacyRaw as Record<string, unknown>) : undefined;
+
+  const explicitChunkMode = canonical?.chunkMode ?? legacy?.chunkMode;
+  const chunkMode =
+    explicitChunkMode === "newline" || explicitChunkMode === "length"
+      ? explicitChunkMode
+      : "newline";
+
+  const nextCanonical = {
+    ...(legacy ?? {}),
+    ...(canonical ?? {}),
+    chunkMode,
+  };
+
+  return {
+    ...(cfg as Record<string, unknown>),
+    channels: {
+      ...channels,
+      [DINGTALK_CHANNEL_ID]: nextCanonical,
+    },
+  };
+}
+
+/**
  * Start monitoring DingTalk for incoming messages.
  */
 export async function monitorDingTalkProvider(
@@ -83,6 +129,7 @@ export async function monitorDingTalkProvider(
 ): Promise<StreamClientHandle> {
   const { account, config, abortSignal, log } = opts;
   const runtime = getDingTalkRuntime();
+  const dispatchConfig = ensureDingTalkStreamingConfig(config);
 
   // Parse custom subscriptions if provided
   let subscriptionsBody: Record<string, unknown> | null = null;
@@ -130,7 +177,7 @@ export async function monitorDingTalkProvider(
   }): Promise<void> {
     await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx: opts.ctx,
-      cfg: config,
+      cfg: dispatchConfig,
       dispatcherOptions: opts.dispatcherOptions as any,
     });
   }
@@ -327,9 +374,9 @@ export async function monitorDingTalkProvider(
       SenderName: chat.senderName,
       SenderId: chat.senderId,
       CommandAuthorized: commandAuthorized,
-      Provider: "dingtalk",
-      Surface: "dingtalk",
-      OriginatingChannel: "dingtalk" as const,
+      Provider: DINGTALK_CHANNEL_ID,
+      Surface: DINGTALK_CHANNEL_ID,
+      OriginatingChannel: DINGTALK_CHANNEL_ID,
       OriginatingTo: chat.conversationId,
       Timestamp: Date.now(),
     };
