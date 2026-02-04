@@ -1,6 +1,6 @@
 {
   "name": "clawdbot-dingtalk",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "description": "DingTalk (钉钉) channel plugin for Openclaw - enables AI agent messaging via DingTalk Stream API",
   "type": "module",
   "main": "./dist/index.js",
@@ -33,7 +33,7 @@
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
-    "tag": "beta"
+    "tag": "latest"
   },
   "keywords": [
     "openclaw",
