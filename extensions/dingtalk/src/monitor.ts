@@ -5,9 +5,9 @@
 type ClawdbotConfig = any;
 import { loadWebMedia } from "openclaw/plugin-sdk";
 import type { ResolvedDingTalkAccount } from "./accounts.js";
-import { getDingTalkRuntime, getOrCreateTokenManager } from "./runtime.js";
+import { getDingTalkRuntime, getOrCreateTokenManager, getCardStreamState, setCardStreamState } from "./runtime.js";
 import { startDingTalkStreamClient } from "./stream/client.js";
-import type { ChatbotMessage, StreamClientHandle, StreamLogger } from "./stream/types.js";
+import type { ChatbotMessage, StreamClientHandle, StreamLogger, CardCallbackMessage } from "./stream/types.js";
 import { buildSessionKey, startsWithPrefix } from "./stream/message-parser.js";
 import { sendReplyViaSessionWebhook, sendImageViaSessionWebhook, sendImageWithMediaIdViaSessionWebhook } from "./send/reply.js";
 import { convertMarkdownForDingTalk } from "./send/markdown.js";
@@ -17,10 +17,13 @@ import { DINGTALK_CHANNEL_ID } from "./config-schema.js";
 import { downloadMedia, uploadMedia } from "./api/media.js";
 import { uploadMediaToOAPI } from "./api/media-upload.js";
 import { sendFileMessage } from "./api/send-message.js";
+import { createCardInstance, updateCardInstance } from "./api/card-instances.js";
 import { extractThinkDirective, extractThinkOnceDirective, type ThinkLevel } from "./util/think-directive.js";
 import { parseMediaProtocol, hasMediaTags, replaceMediaTags } from "./media-protocol.js";
 import { processMediaItems, uploadMediaItem } from "./send/media-sender.js";
 import { DEFAULT_DINGTALK_SYSTEM_PROMPT, buildSenderContext } from "./system-prompt.js";
+import type { DingTalkAICard } from "./types/channel-data.js";
+import { generateOutTrackId, resolveOpenSpace, resolveTemplateId } from "./util/ai-card.js";
 
 export interface MonitorDingTalkOpts {
   account: ResolvedDingTalkAccount;
@@ -73,6 +76,21 @@ function parseVerboseOverride(text?: string): VerboseOverride | undefined {
   if (["off", "false", "no", "0", "disable", "disabled"].includes(raw)) return "off";
   if (["full", "all", "everything"].includes(raw)) return "full";
   if (["on", "true", "yes", "1", "minimal"].includes(raw)) return "on";
+  return undefined;
+}
+
+function inferChatTypeFromOpenSpaceId(openSpaceId?: string): "group" | "direct" | undefined {
+  if (!openSpaceId) return undefined;
+  const lower = openSpaceId.toLowerCase();
+  if (lower.includes("im_group")) return "group";
+  if (lower.includes("im_robot") || lower.includes("im_single") || lower.includes("im_user")) return "direct";
+  return undefined;
+}
+
+function extractConversationIdFromOpenSpaceId(openSpaceId?: string): string | undefined {
+  if (!openSpaceId) return undefined;
+  const match = openSpaceId.match(/IM_GROUP\.([^/]+.*)$/i);
+  if (match && match[1]) return match[1];
   return undefined;
 }
 
@@ -182,6 +200,100 @@ export async function monitorDingTalkProvider(
     });
   }
 
+  async function maybeHandleAICardDelivery(params: {
+    payload: {
+      text?: string;
+      channelData?: { dingtalk?: Record<string, unknown> };
+    };
+    info: { kind: string };
+    chat: ChatbotMessage;
+    sessionKey: string;
+  }): Promise<{ handled: boolean; ok: boolean; error?: Error }> {
+    const channelData = params.payload.channelData?.dingtalk as { card?: DingTalkAICard } | undefined;
+    const card = channelData?.card;
+    if (!card) return { handled: false, ok: false };
+
+    if (!account.aiCard.enabled) {
+      return { handled: true, ok: false, error: new Error("AI Card is disabled for this account.") };
+    }
+
+    const templateId = resolveTemplateId(account, card);
+    if (!templateId) {
+      return { handled: true, ok: false, error: new Error("Missing AI card templateId.") };
+    }
+
+    if (!card.cardData) {
+      return { handled: true, ok: false, error: new Error("Missing AI card cardData.") };
+    }
+
+    const { openSpace, openSpaceId } = resolveOpenSpace({ account, card, chat: params.chat });
+    if (!openSpace && !openSpaceId) {
+      return { handled: true, ok: false, error: new Error("Missing openSpace/openSpaceId for AI card delivery.") };
+    }
+
+    const stream = card.stream === true;
+    const now = Date.now();
+    const throttleMs = account.aiCard.updateThrottleMs;
+    const state = stream ? getCardStreamState(params.sessionKey) : undefined;
+    const outTrackId = card.outTrackId ?? state?.outTrackId ?? generateOutTrackId("card");
+    const callbackType = card.callbackType ?? account.aiCard.callbackType;
+
+    if (!stream && params.info.kind !== "final") {
+      return { handled: true, ok: true };
+    }
+
+    if (stream && state && now - state.lastUpdateAt < throttleMs && params.info.kind !== "final") {
+      return { handled: true, ok: true };
+    }
+
+    const tokenManager = getOrCreateTokenManager(account);
+    const preferUpdate =
+      card.mode === "update" ||
+      Boolean(card.cardInstanceId) ||
+      Boolean(state?.cardInstanceId);
+
+    const cardInstanceId = card.cardInstanceId ?? state?.cardInstanceId;
+
+    let result;
+    if (preferUpdate) {
+      result = await updateCardInstance({
+        account,
+        cardInstanceId,
+        outTrackId,
+        cardData: card.cardData,
+        privateData: card.privateData,
+        openSpace,
+        openSpaceId,
+        callbackType,
+        tokenManager,
+      });
+    } else {
+      result = await createCardInstance({
+        account,
+        templateId,
+        outTrackId,
+        cardData: card.cardData,
+        privateData: card.privateData,
+        openSpace,
+        openSpaceId,
+        callbackType,
+        tokenManager,
+      });
+    }
+
+    if (result.ok) {
+      const nextState = {
+        cardInstanceId: result.cardInstanceId ?? cardInstanceId,
+        outTrackId,
+        templateId,
+        lastUpdateAt: now,
+      };
+      setCardStreamState(params.sessionKey, nextState);
+    }
+
+    return { handled: true, ok: result.ok, error: result.error };
+  }
+
   const client = await startDingTalkStreamClient({
     clientId: account.clientId,
     clientSecret: account.clientSecret,
@@ -194,6 +306,13 @@ export async function monitorDingTalkProvider(
         await handleInboundMessage(chat);
       } catch (err) {
         log?.error?.({ err: { message: (err as Error)?.message } }, "Handler error");
+      }
+    },
+    onCardCallback: async (callback: CardCallbackMessage) => {
+      try {
+        await handleCardCallback(callback);
+      } catch (err) {
+        log?.error?.({ err: { message: (err as Error)?.message } }, "Card callback handler error");
       }
     },
   });
@@ -210,7 +329,15 @@ export async function monitorDingTalkProvider(
     );
   }
 
-  async function handleInboundMessage(chat: ChatbotMessage): Promise<void> {
+  async function handleInboundMessage(
+    chat: ChatbotMessage,
+    opts: {
+      metadata?: Record<string, unknown>;
+      bypassPrefix?: boolean;
+      bypassMention?: boolean;
+      forceCommandAuthorized?: boolean;
+    } = {}
+  ): Promise<void> {
     const isGroup = isGroupChatType(chat.chatType);
 
     // Filter: skip self messages
@@ -227,12 +354,12 @@ export async function monitorDingTalkProvider(
     }
 
     // Filter: require prefix (for group chats)
-    if (shouldEnforcePrefix(account.requirePrefix, chat.chatType) && !startsWithPrefix(chat.text, account.requirePrefix)) {
+    if (!opts.bypassPrefix && shouldEnforcePrefix(account.requirePrefix, chat.chatType) && !startsWithPrefix(chat.text, account.requirePrefix)) {
       return;
     }
 
     // Filter: require @mention in group chats (if requireMention is enabled and no requirePrefix)
-    if (isGroup && account.requireMention && !account.requirePrefix) {
+    if (!opts.bypassMention && isGroup && account.requireMention && !account.requirePrefix) {
       // Check if sender is in bypass list
       const isBypassUser = account.mentionBypassUsers.length > 0 &&
         account.mentionBypassUsers.includes(chat.senderId);
@@ -246,7 +373,7 @@ export async function monitorDingTalkProvider(
     const sessionKey = buildSessionKey(chat, "main", {
       isolateGroupBySender: account.isolateContextPerUserInGroup,
     });
-    const commandAuthorized = hasAllowedCommandToken(chat.text);
+    const commandAuthorized = opts.forceCommandAuthorized ?? hasAllowedCommandToken(chat.text);
 
     if (RESET_COMMAND_RE.test(chat.text)) {
       verboseOverrides.delete(sessionKey);
@@ -379,6 +506,8 @@ export async function monitorDingTalkProvider(
       OriginatingChannel: DINGTALK_CHANNEL_ID,
       OriginatingTo: chat.conversationId,
       Timestamp: Date.now(),
+      metadata: opts.metadata,
+      Metadata: opts.metadata,
     };
 
     // Create reply dispatcher that sends to DingTalk
@@ -386,10 +515,35 @@ export async function monitorDingTalkProvider(
     let firstReply = true;
     const dispatcherOptions = {
       deliver: async (
-        payload: { text?: string; mediaUrls?: string[]; mediaUrl?: string; replyToId?: string },
+        payload: {
+          text?: string;
+          mediaUrls?: string[];
+          mediaUrl?: string;
+          replyToId?: string;
+          channelData?: { dingtalk?: Record<string, unknown> };
+        },
         info: { kind: string }
       ) => {
         log?.info?.({ kind: info.kind, hasText: !!payload.text, textLength: payload.text?.length ?? 0 }, "deliver called");
+
+        const cardResult = await maybeHandleAICardDelivery({
+          payload,
+          info,
+          chat,
+          sessionKey,
+        });
+        if (cardResult.handled) {
+          if (!cardResult.ok && payload.text?.trim()) {
+            const fallbackMode = account.aiCard.fallbackReplyMode ?? account.replyMode;
+            await sendReplyViaSessionWebhook(chat.sessionWebhook, payload.text, {
+              replyMode: fallbackMode,
+              maxChars: account.maxChars,
+              tableMode: account.tableMode,
+              logger: log,
+            });
+          }
+          return;
+        }
 
         // Allow "block" kind messages if they have text, as they often contain the main response
         const isBlockWithText = info.kind === "block" && !!payload.text?.trim();
@@ -715,6 +869,60 @@ export async function monitorDingTalkProvider(
         }
       );
     }
+  }
+
+  async function handleCardCallback(callback: CardCallbackMessage): Promise<void> {
+    const senderId = callback.userId ?? "unknown";
+
+    if (account.allowFrom.length > 0 && senderId) {
+      if (!account.allowFrom.includes(senderId)) {
+        log?.info?.({ senderId }, "Blocked card callback sender (not in allowlist)");
+        return;
+      }
+    }
+
+    const chatType =
+      inferChatTypeFromOpenSpaceId(callback.openSpaceId) ??
+      (callback.conversationId?.startsWith("cid") ? "group" : "direct");
+    const conversationId =
+      callback.conversationId ??
+      extractConversationIdFromOpenSpaceId(callback.openSpaceId) ??
+      callback.openSpaceId ??
+      "card";
+
+    const actionId = callback.actionId ?? "callback";
+    const cardPayload = {
+      cardInstanceId: callback.cardInstanceId,
+      cardTemplateId: callback.cardTemplateId,
+      openSpaceId: callback.openSpaceId,
+      params: callback.params ?? {},
+    };
+    const text = `/card ${actionId} ${JSON.stringify(cardPayload)}`;
+
+    const chat: ChatbotMessage = {
+      messageId: callback.messageId || `card:${Date.now()}`,
+      eventType: "CARD_CALLBACK",
+      text,
+      sessionWebhook: "",
+      conversationId,
+      chatType,
+      senderId,
+      senderName: callback.userName ?? "Card",
+      raw: callback.raw,
+      atUsers: [],
+      isInAtList: false,
+    };
+
+    await handleInboundMessage(chat, {
+      bypassMention: true,
+      bypassPrefix: true,
+      forceCommandAuthorized: true,
+      metadata: {
+        dingtalk: {
+          cardCallback: callback,
+        },
+      },
+    });
   }
 
   return client;

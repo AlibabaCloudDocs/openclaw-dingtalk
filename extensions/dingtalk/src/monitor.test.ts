@@ -52,6 +52,8 @@ vi.mock("./runtime.js", () => {
       getToken: vi.fn().mockResolvedValue("test-token"),
       invalidate: vi.fn(),
     }),
+    getCardStreamState: () => undefined,
+    setCardStreamState: vi.fn(),
   };
 });
 
@@ -84,10 +86,12 @@ import { BASIC_ACCOUNT, FILTERED_ACCOUNT, PREFIX_ACCOUNT, VERBOSE_ACCOUNT } from
 describe("monitorDingTalkProvider", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
   let capturedCallback: ((message: any) => Promise<void>) | undefined;
+  let capturedCardCallback: ((message: any) => Promise<void>) | undefined;
 
   beforeEach(async () => {
     vi.clearAllMocks();
     capturedCallback = undefined;
+    capturedCardCallback = undefined;
 
     // Mock fetch for webhook replies
     mockFetch = vi.fn().mockResolvedValue({
@@ -102,6 +106,9 @@ describe("monitorDingTalkProvider", () => {
       (topic: string, callback: any) => {
         if (topic === TOPIC_ROBOT) {
           capturedCallback = callback;
+        }
+        if (topic === "/v1.0/card/instances/callback") {
+          capturedCardCallback = callback;
         }
       }
     );
@@ -600,5 +607,37 @@ describe("monitorDingTalkProvider", () => {
     expect(mediaUploadApi.uploadMediaToOAPI).toHaveBeenCalled();
     const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
     expect(body.msgtype).toBe("image");
+  });
+
+  it("dispatches card callback as virtual message", async () => {
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    expect(capturedCardCallback).toBeTypeOf("function");
+
+    const mockMessage = {
+      type: "CALLBACK",
+      headers: {
+        topic: "/v1.0/card/instances/callback",
+        eventType: "CARD_CALLBACK",
+        messageId: "card-msg-123",
+      },
+      data: JSON.stringify({
+        cardInstanceId: "card-1",
+        actionId: "approve",
+        openSpaceId: "dtv1.card//IM_GROUP.cid-test",
+        userId: "allowed-user-1",
+      }),
+    };
+
+    await capturedCardCallback?.(mockMessage);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const runtime = getDingTalkRuntime();
+    expect(runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalled();
+    const call = (runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call?.[0]?.ctx?.Body).toContain("/card");
   });
 });

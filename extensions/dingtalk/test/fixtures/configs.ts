@@ -32,6 +32,11 @@ export const BASIC_ACCOUNT: ResolvedDingTalkAccount = {
   showToolStatus: false,
   showToolResult: false,
   thinking: "off",
+  aiCard: {
+    enabled: false,
+    callbackType: "STREAM",
+    updateThrottleMs: 800,
+  },
 };
 
 /**

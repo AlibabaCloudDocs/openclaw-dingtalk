@@ -12,11 +12,15 @@ import {
 } from "dingtalk-stream";
 import type {
   ChatbotMessage,
+  CardCallbackMessage,
   StreamClientHandle,
   StreamClientOptions,
   StreamLogger,
 } from "./types.js";
 import { extractChatbotMessage } from "./message-parser.js";
+import { extractCardCallback } from "./card-callback.js";
+
+const TOPIC_CARD_INSTANCE_CALLBACK = "/v1.0/card/instances/callback";
 
 /**
  * Start DingTalk Stream client using the official SDK.
@@ -25,7 +29,7 @@ import { extractChatbotMessage } from "./message-parser.js";
 export async function startDingTalkStreamClient(
   options: StreamClientOptions
 ): Promise<StreamClientHandle> {
-  const { clientId, clientSecret, logger, onChatMessage } = options;
+  const { clientId, clientSecret, logger, onChatMessage, onCardCallback } = options;
 
   logger?.info?.({ clientId: clientId?.slice(0, 8) + "..." }, "Initializing DingTalk Stream SDK client");
 
@@ -106,6 +110,51 @@ export async function startDingTalkStreamClient(
     } catch (err) {
       logger?.error?.({ err: { message: (err as Error)?.message } }, "Failed to send AI Graph API response");
     }
+  });
+
+  // Register AI Card callback
+  client.registerCallbackListener(TOPIC_CARD_INSTANCE_CALLBACK, async (res: DWClientDownStream) => {
+    logger?.debug?.(
+      { topic: res.headers.topic, messageId: res.headers.messageId },
+      "Received AI Card callback"
+    );
+
+    try {
+      client.socketCallBackResponse(res.headers.messageId, { status: "received" });
+    } catch (err) {
+      logger?.error?.({ err: { message: (err as Error)?.message } }, "Failed to send card callback ACK");
+    }
+
+    let parsedData: unknown;
+    try {
+      parsedData = JSON.parse(res.data);
+    } catch {
+      parsedData = res.data;
+    }
+
+    const rawMessage = {
+      type: res.type,
+      headers: res.headers,
+      data: parsedData,
+    };
+
+    const callback = extractCardCallback(rawMessage);
+    if (!callback) {
+      logger?.debug?.(
+        { eventType: res.headers.eventType, topic: res.headers.topic },
+        "Stream event ignored (not card callback)"
+      );
+      return;
+    }
+
+    if (!onCardCallback) {
+      logger?.debug?.({ messageId: callback.messageId }, "No card callback handler registered");
+      return;
+    }
+
+    onCardCallback(callback as CardCallbackMessage).catch((err) => {
+      logger?.error?.({ err: { message: (err as Error)?.message } }, "onCardCallback handler error");
+    });
   });
 
   // Register global event listener for all events (logging + ack)

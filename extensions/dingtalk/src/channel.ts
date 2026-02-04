@@ -25,6 +25,8 @@ import { isLocalPath, isImageUrl } from "./api/media-upload.js";
 import { getOrCreateTokenManager } from "./runtime.js";
 import type { StreamLogger } from "./stream/types.js";
 import type { DingTalkChannelData } from "./types/channel-data.js";
+import { createCardInstance, updateCardInstance } from "./api/card-instances.js";
+import { generateOutTrackId, resolveOpenSpace, resolveTemplateId } from "./util/ai-card.js";
 
 /**
  * Adapt clawdbot SubsystemLogger to StreamLogger interface.
@@ -109,6 +111,17 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
         apiBase: { type: "string" },
         openPath: { type: "string" },
         subscriptionsJson: { type: "string" },
+        aiCard: {
+          type: "object",
+          properties: {
+            enabled: { type: "boolean", default: false },
+            templateId: { type: "string" },
+            callbackType: { type: "string", enum: ["STREAM", "HTTP"], default: "STREAM" },
+            updateThrottleMs: { type: "number", default: 800 },
+            fallbackReplyMode: { type: "string", enum: ["text", "markdown"] },
+            openSpace: { type: "object" },
+          },
+        },
       },
     },
     uiHints: {
@@ -133,6 +146,12 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
       apiBase: { label: "API 基础 URL", help: "钉钉 API 基础地址（默认：https://api.dingtalk.com）", advanced: true },
       openPath: { label: "Open Path", help: "Stream 连接路径（默认：/v1.0/gateway/connections/open）", advanced: true },
       subscriptionsJson: { label: "订阅配置 JSON", help: "自定义订阅配置 JSON（高级用法）", advanced: true },
+      "aiCard.enabled": { label: "启用 AI 卡片", help: "是否启用高级互动卡片能力", advanced: true },
+      "aiCard.templateId": { label: "默认模板 ID", help: "AI 卡片默认模板 ID", advanced: true },
+      "aiCard.callbackType": { label: "回调类型", help: "卡片回调类型（默认 STREAM）", advanced: true },
+      "aiCard.updateThrottleMs": { label: "更新节流 (ms)", help: "流式更新节流间隔", advanced: true },
+      "aiCard.fallbackReplyMode": { label: "失败回退模式", help: "卡片发送失败时的文本模式", advanced: true },
+      "aiCard.openSpace": { label: "默认 openSpace", help: "卡片投放 openSpace 结构（高级）", advanced: true },
     },
   },
 
@@ -363,6 +382,92 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
 
       const tokenManager = getOrCreateTokenManager(account);
       const channelData = payload.channelData?.dingtalk as DingTalkChannelData | undefined;
+
+      // Handle AI Card
+      if (channelData?.card) {
+        const card = channelData.card;
+
+        const fallbackToText = async (reason: string) => {
+          if (!payload.text) {
+            return {
+              channel: "dingtalk",
+              ok: false,
+              error: new Error(reason),
+              messageId: "",
+            };
+          }
+
+          const fallbackMode = account.aiCard.fallbackReplyMode ?? account.replyMode;
+          const fallback = await sendProactiveMessage({
+            account,
+            to,
+            text: payload.text,
+            replyMode: fallbackMode,
+            tokenManager,
+          });
+
+          return {
+            channel: "dingtalk",
+            ok: fallback.ok,
+            messageId: fallback.processQueryKey || "",
+            ...(fallback.error ? { error: fallback.error } : {}),
+          };
+        };
+
+        if (!account.aiCard.enabled) {
+          return fallbackToText("AI Card is disabled for this account.");
+        }
+
+        const templateId = resolveTemplateId(account, card);
+        if (!templateId) {
+          return fallbackToText("Missing AI card templateId.");
+        }
+
+        const { openSpace, openSpaceId } = resolveOpenSpace({ account, card });
+        if (!openSpace && !openSpaceId) {
+          return fallbackToText("Missing openSpace/openSpaceId for AI card delivery.");
+        }
+
+        const outTrackId = card.outTrackId ?? generateOutTrackId("card");
+        const callbackType = card.callbackType ?? account.aiCard.callbackType;
+
+        let result;
+        if (card.mode === "update" || card.cardInstanceId) {
+          result = await updateCardInstance({
+            account,
+            cardInstanceId: card.cardInstanceId,
+            outTrackId,
+            cardData: card.cardData,
+            privateData: card.privateData,
+            openSpace,
+            openSpaceId,
+            callbackType,
+            tokenManager,
+          });
+        } else {
+          result = await createCardInstance({
+            account,
+            templateId,
+            outTrackId,
+            cardData: card.cardData,
+            privateData: card.privateData,
+            openSpace,
+            openSpaceId,
+            callbackType,
+            tokenManager,
+          });
+        }
+
+        if (result.ok) {
+          return {
+            channel: "dingtalk",
+            ok: true,
+            messageId: result.cardInstanceId ?? outTrackId,
+          };
+        }
+
+        return fallbackToText(result.error?.message ?? "AI Card send failed");
+      }
 
       // Handle ActionCard
       if (channelData?.actionCard) {

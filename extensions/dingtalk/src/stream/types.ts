@@ -70,6 +70,22 @@ export interface ChatbotMessage {
 }
 
 /**
+ * Parsed AI card callback message.
+ */
+export interface CardCallbackMessage {
+  messageId: string;
+  cardInstanceId?: string;
+  cardTemplateId?: string;
+  actionId?: string;
+  params?: Record<string, unknown>;
+  userId?: string;
+  userName?: string;
+  openSpaceId?: string;
+  conversationId?: string;
+  raw: RawStreamMessage;
+}
+
+/**
  * Stream client handle for stopping the connection.
  */
 export interface StreamClientHandle {
@@ -91,6 +107,7 @@ export interface StreamClientOptions {
   openBody?: Record<string, unknown>;
   logger?: StreamLogger;
   onChatMessage: (message: ChatbotMessage) => Promise<void>;
+  onCardCallback?: (message: CardCallbackMessage) => Promise<void>;
 }
 
 /**
