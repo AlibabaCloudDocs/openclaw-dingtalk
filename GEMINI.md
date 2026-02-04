@@ -343,6 +343,7 @@ ssh root@120.27.224.240 "openclaw gateway"
 ```bash
 # 启动测试容器（持久化目录挂载）
 docker run -d --name openclaw-test \
+  --memory 2g \
   -v ~/openclaw-container:/data \
   alibaba-cloud-linux-3-registry.cn-hangzhou.cr.aliyuncs.com/alinux3/alinux3 \
   sleep infinity

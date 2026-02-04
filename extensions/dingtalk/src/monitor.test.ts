@@ -84,7 +84,7 @@ describe("monitorDingTalkProvider", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
   let capturedCallback: ((message: any) => Promise<void>) | undefined;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     capturedCallback = undefined;
 
@@ -96,10 +96,10 @@ describe("monitorDingTalkProvider", () => {
     vi.stubGlobal("fetch", mockFetch);
 
     // Capture the robot callback when client is created
-    const { DWClient } = require("dingtalk-stream");
+    const { DWClient, TOPIC_ROBOT } = await import("dingtalk-stream");
     vi.spyOn(DWClient.prototype, "registerCallbackListener").mockImplementation(
       (topic: string, callback: any) => {
-        if (topic === "/v1.0/im/bot/messages/get") {
+        if (topic === TOPIC_ROBOT) {
           capturedCallback = callback;
         }
       }
@@ -135,6 +135,8 @@ describe("monitorDingTalkProvider", () => {
       conversationType: overrides.conversationType ?? "2",
       senderStaffId: overrides.senderId ?? "user001",
       senderNick: "Test User",
+      // Simulate a normal group mention so BASIC_ACCOUNT (requireMention=true) will process it
+      isInAtList: true,
     }),
   });
 
@@ -184,6 +186,33 @@ describe("monitorDingTalkProvider", () => {
       expect(ctx.SessionKey).toContain("dingtalk:group:");
       expect(ctx.Provider).toBe("dingtalk");
       expect(ctx.Surface).toBe("dingtalk");
+    }
+  });
+
+  it("isolates group SessionKey per sender when enabled", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, isolateContextPerUserInGroup: true };
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    if (capturedCallback) {
+      await capturedCallback(
+        createMockMessage({
+          text: "Test message",
+          conversationType: "2",
+          conversationId: "cid123",
+          senderId: "user001",
+        })
+      );
+      await new Promise((r) => setTimeout(r, 50));
+
+      const call = (runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>).mock.calls[0];
+      const ctx = call[0].ctx;
+
+      expect(ctx.SessionKey).toBe("agent:main:dingtalk:group:cid123:user:user001");
     }
   });
 

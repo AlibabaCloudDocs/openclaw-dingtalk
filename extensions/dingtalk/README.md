@@ -85,6 +85,7 @@ clawdbot gateway
 | `maxChars` | number | `1800` | Max characters per message chunk |
 | `allowFrom` | string[] | `[]` | Allowlist of sender IDs (empty = allow all) |
 | `requirePrefix` | string | - | Require messages to start with prefix |
+| `isolateContextPerUserInGroup` | boolean | `false` | When enabled, isolate session context per user in group chats |
 | `responsePrefix` | string | - | Prefix added to responses |
 | `tableMode` | `"code"` \| `"off"` | `"code"` | Table rendering mode |
 | `showToolStatus` | boolean | `false` | Show tool execution status |

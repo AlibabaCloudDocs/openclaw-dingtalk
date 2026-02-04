@@ -64,6 +64,9 @@ export const DingTalkConfigSchema = z.object({
   /** Require @机器人 in group chats (default: true) */
   requireMention: z.boolean().default(true),
 
+  /** Isolate context per user in group chats (default: false) */
+  isolateContextPerUserInGroup: z.boolean().default(false),
+
   /** Users who can bypass @mention requirement */
   mentionBypassUsers: z.array(z.string()).default([]),
 
@@ -104,6 +107,7 @@ export const DingTalkConfigSchema = z.object({
         selfUserId: z.string().optional(),
         requirePrefix: z.string().optional(),
         requireMention: z.boolean().optional(),
+        isolateContextPerUserInGroup: z.boolean().optional(),
         mentionBypassUsers: z.array(z.string()).optional(),
         responsePrefix: z.string().optional(),
         tableMode: z.enum(["code", "off"]).optional(),

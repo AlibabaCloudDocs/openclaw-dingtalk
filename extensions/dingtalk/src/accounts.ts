@@ -37,6 +37,7 @@ export type ResolvedDingTalkAccount = {
   selfUserId?: string;
   requirePrefix?: string;
   requireMention: boolean;
+  isolateContextPerUserInGroup: boolean;
   mentionBypassUsers: string[];
 
   // Response formatting
@@ -172,6 +173,10 @@ export function resolveDingTalkAccount(params: {
   const selfUserId = accountConfig?.selfUserId ?? section?.selfUserId;
   const requirePrefix = accountConfig?.requirePrefix ?? section?.requirePrefix;
   const requireMention = accountConfig?.requireMention ?? section?.requireMention ?? true;
+  const isolateContextPerUserInGroup =
+    accountConfig?.isolateContextPerUserInGroup ??
+    section?.isolateContextPerUserInGroup ??
+    false;
   const mentionBypassUsers = accountConfig?.mentionBypassUsers ?? section?.mentionBypassUsers ?? [];
   const responsePrefix = accountConfig?.responsePrefix ?? section?.responsePrefix;
   const showToolStatus = accountConfig?.showToolStatus ?? section?.showToolStatus ?? false;
@@ -206,6 +211,7 @@ export function resolveDingTalkAccount(params: {
     selfUserId,
     requirePrefix,
     requireMention,
+    isolateContextPerUserInGroup,
     mentionBypassUsers,
     responsePrefix,
     showToolStatus,

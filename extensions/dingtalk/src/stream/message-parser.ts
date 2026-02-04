@@ -297,15 +297,30 @@ export function extractChatbotMessage(raw: RawStreamMessage): ChatbotMessage | n
 
 /**
  * Build session key from chat message.
- * Groups share a conversation key, DMs use sender ID.
+ * By default, groups share a conversation key, DMs use sender ID.
+ * Optionally, group sessions can be isolated by sender (per-user context).
  * Uses agent:main: prefix for compatibility with clawdbot Control UI.
  */
-export function buildSessionKey(chat: ChatbotMessage, agentId: string = "main"): string {
+export type BuildSessionKeyOptions = {
+  /** When true, group chats will be isolated by senderId (per user). */
+  isolateGroupBySender?: boolean;
+};
+
+export function buildSessionKey(
+  chat: ChatbotMessage,
+  agentId: string = "main",
+  opts: BuildSessionKeyOptions = {}
+): string {
   const conv = chat.conversationId || "unknownConv";
   const sender = chat.senderId || "unknownSender";
   const chatType = (chat.chatType || "").toLowerCase();
   const isGroup = /group|chat|2|multi/.test(chatType);
-  const baseKey = isGroup ? `dingtalk:group:${conv}` : `dingtalk:dm:${sender}`;
+  const isolateGroupBySender = opts.isolateGroupBySender ?? false;
+  const baseKey = isGroup
+    ? isolateGroupBySender
+      ? `dingtalk:group:${conv}:user:${sender}`
+      : `dingtalk:group:${conv}`
+    : `dingtalk:dm:${sender}`;
   return `agent:${agentId}:${baseKey}`;
 }
 

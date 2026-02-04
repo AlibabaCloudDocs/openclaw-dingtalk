@@ -14,6 +14,8 @@ import { convertMarkdownForDingTalk } from "./send/markdown.js";
 import { stripDirectiveTags, isOnlyDirectiveTags } from "./util/directive-tags.js";
 import { applyResponsePrefix, isGroupChatType, shouldEnforcePrefix } from "./util/prefix.js";
 import { downloadMedia, uploadMedia } from "./api/media.js";
+import { uploadMediaToOAPI } from "./api/media-upload.js";
+import { sendFileMessage } from "./api/send-message.js";
 import { extractThinkDirective, extractThinkOnceDirective, type ThinkLevel } from "./util/think-directive.js";
 import { parseMediaProtocol, hasMediaTags, replaceMediaTags } from "./media-protocol.js";
 import { processMediaItems, uploadMediaItem } from "./send/media-sender.js";
@@ -194,7 +196,9 @@ export async function monitorDingTalkProvider(
       }
     }
 
-    const sessionKey = buildSessionKey(chat);
+    const sessionKey = buildSessionKey(chat, "main", {
+      isolateGroupBySender: account.isolateContextPerUserInGroup,
+    });
     const commandAuthorized = hasAllowedCommandToken(chat.text);
 
     if (RESET_COMMAND_RE.test(chat.text)) {
@@ -343,13 +347,26 @@ export async function monitorDingTalkProvider(
         // Allow "block" kind messages if they have text, as they often contain the main response
         const isBlockWithText = info.kind === "block" && !!payload.text?.trim();
 
-        if (info.kind !== "final" && !allowNonFinal && !isBlockWithText) {
+        // Allow media deliveries even when verbose is off (e.g., tool-kind images).
+        const explicitMediaUrl = payload.mediaUrl || payload.mediaUrls?.[0];
+        const trimmedText = payload.text?.trim();
+        const derivedMediaUrl =
+          !explicitMediaUrl &&
+          trimmedText &&
+          /^(?:\.{1,2}\/|\/|~\/|file:\/\/|MEDIA:|attachment:\/\/)/.test(trimmedText)
+            ? trimmedText
+            : undefined;
+        const mediaUrl = explicitMediaUrl || derivedMediaUrl;
+
+        const allowText = info.kind === "final" || allowNonFinal || isBlockWithText;
+        const skipText = !allowText;
+
+        if (skipText && !mediaUrl) {
           log?.debug?.({ kind: info.kind, sessionKey }, "Skipping non-final reply (verbose off)");
           return;
         }
 
         // Handle image/media URLs - send as rendered images
-        const mediaUrl = payload.mediaUrl || payload.mediaUrls?.[0];
         if (mediaUrl) {
           log?.info?.({ mediaUrl: mediaUrl.slice(0, 80) }, "Processing media for DingTalk");
 
@@ -366,32 +383,66 @@ export async function monitorDingTalkProvider(
             try {
               // Load the local file
               const media = await loadWebMedia(mediaUrl);
+              const isImage =
+                media.kind === "image" || /^image\//i.test(media.contentType ?? "");
               log?.debug?.({
                 contentType: media.contentType,
                 size: media.buffer.length,
                 fileName: media.fileName
               }, "Local media loaded");
 
-              // Upload to DingTalk
               const tokenManager = getOrCreateTokenManager(account);
-              const uploadResult = await uploadMedia({
-                account,
-                file: media.buffer,
-                fileName: media.fileName ?? "image.png",
-                tokenManager,
-                logger: log,
-              });
 
-              if (uploadResult.ok && uploadResult.mediaId) {
-                log?.info?.({ mediaId: uploadResult.mediaId }, "Media uploaded, sending image");
-                // Send via sessionWebhook with mediaId
-                await sendImageWithMediaIdViaSessionWebhook(
-                  chat.sessionWebhook,
-                  uploadResult.mediaId,
-                  { logger: log }
-                );
+              if (isImage) {
+                // For local images, upload via OAPI to get a sessionWebhook-compatible media_id.
+                const fileName = media.fileName ?? "image.png";
+                const uploadResult = await uploadMediaToOAPI({
+                  account,
+                  media: media.buffer,
+                  fileName,
+                  tokenManager,
+                  logger: log,
+                });
+
+                if (uploadResult.ok && uploadResult.mediaId) {
+                  log?.info?.({ mediaId: uploadResult.mediaId }, "Media uploaded (OAPI), sending image");
+                  await sendImageWithMediaIdViaSessionWebhook(
+                    chat.sessionWebhook,
+                    uploadResult.mediaId,
+                    { logger: log }
+                  );
+                } else {
+                  log?.error?.({ err: uploadResult.error?.message }, "Failed to upload image via OAPI");
+                }
               } else {
-                log?.error?.({ err: uploadResult.error?.message }, "Failed to upload media to DingTalk");
+                // For non-image media, upload via robot API and send as a file message.
+                const fileName = media.fileName ?? "file.bin";
+                const uploadResult = await uploadMedia({
+                  account,
+                  file: media.buffer,
+                  fileName,
+                  tokenManager,
+                  logger: log,
+                });
+
+                if (uploadResult.ok && uploadResult.mediaId) {
+                  const to = isGroup ? chat.conversationId : chat.senderId;
+                  if (!to) {
+                    log?.error?.({ fileName }, "Missing target for file message delivery");
+                  } else {
+                    log?.info?.({ mediaId: uploadResult.mediaId, fileName }, "Media uploaded, sending file message");
+                    await sendFileMessage({
+                      account,
+                      to,
+                      mediaId: uploadResult.mediaId,
+                      fileName,
+                      tokenManager,
+                      logger: log,
+                    });
+                  }
+                } else {
+                  log?.error?.({ err: uploadResult.error?.message }, "Failed to upload media to DingTalk");
+                }
               }
             } catch (err) {
               log?.error?.({ err: { message: (err as Error)?.message }, mediaUrl: mediaUrl.slice(0, 50) }, "Failed to load/upload local media");
@@ -399,7 +450,11 @@ export async function monitorDingTalkProvider(
           }
         }
 
-        const text = payload.text;
+        // If the "text" is actually a standalone local path, treat it as media-only.
+        const text =
+          skipText || (derivedMediaUrl && derivedMediaUrl === trimmedText)
+            ? undefined
+            : payload.text;
         if (!text?.trim()) {
           // If we sent an image but no text, that's still a valid delivery
           if (mediaUrl) {

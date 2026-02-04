@@ -82,7 +82,17 @@ describe("resolveDingTalkAccount", () => {
     expect(account.allowFrom).toEqual([]);
     expect(account.showToolStatus).toBe(false);
     expect(account.showToolResult).toBe(false);
+    expect(account.isolateContextPerUserInGroup).toBe(false);
     expect(account.thinking).toBe("off");
+  });
+
+  it("resolves isolateContextPerUserInGroup from config", () => {
+    const cfg = createMockClawdbotConfig({
+      isolateContextPerUserInGroup: true,
+    });
+    const account = resolveDingTalkAccount({ cfg });
+
+    expect(account.isolateContextPerUserInGroup).toBe(true);
   });
 
   it("merges coalesce config with defaults", () => {
