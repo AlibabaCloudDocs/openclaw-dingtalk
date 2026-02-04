@@ -2288,6 +2288,29 @@ try {
 ' >/dev/null 2>&1
 }
 
+restart_gateway_if_running() {
+    local claw="${1:-}"
+    if [[ -z "$claw" ]]; then
+        claw="$(resolve_clawdbot_bin || true)"
+    fi
+    if [[ -z "$claw" ]]; then
+        return 0
+    fi
+
+    if ! is_gateway_daemon_loaded "$claw"; then
+        return 0
+    fi
+
+    spinner_start "重启 Gateway..."
+    if "$claw" gateway restart >/dev/null 2>&1; then
+        spinner_stop 0 "Gateway 已重启"
+        return 0
+    fi
+    spinner_stop 1 "Gateway 重启失败"
+    echo -e "${WARN}→${NC} 请手动重启 Gateway: ${INFO}openclaw gateway restart${NC}"
+    return 0
+}
+
 # ============================================
 # Interactive Configuration Wizard
 # ============================================
@@ -2426,6 +2449,7 @@ install_channel_plugin() {
     ensure_openclaw_plugin_load_path_from_npm_global "$pkg" || true
 
     spinner_stop 0 "${display_name} 插件已安装"
+    restart_gateway_if_running "$claw"
     return 0
 }
 
@@ -3101,9 +3125,7 @@ EOF
         if [[ -z "$claw" ]]; then
             claw="$(resolve_clawdbot_bin || true)"
         fi
-        if [[ -n "$claw" ]] && is_gateway_daemon_loaded "$claw"; then
-            echo -e "${INFO}i${NC} Gateway service detected; restart with: ${INFO}openclaw gateway restart${NC}"
-        fi
+        restart_gateway_if_running "$claw"
     fi
 
     log info "=== Installation completed successfully ==="
@@ -3773,20 +3795,8 @@ prompt_gateway_restart() {
         return 0
     fi
 
-    if ! is_gateway_daemon_loaded "$claw"; then
-        return 0
-    fi
-
     echo ""
-    if is_promptable && [[ "$NO_PROMPT" != "1" ]]; then
-        if clack_confirm "检测到 Gateway 正在运行，是否重启？" "true"; then
-            spinner_start "重启 Gateway..."
-            "$claw" gateway restart >/dev/null 2>&1 || true
-            spinner_stop 0 "Gateway 已重启"
-        fi
-    else
-        echo -e "${INFO}i${NC} 请手动重启 Gateway: ${INFO}openclaw gateway restart${NC}"
-    fi
+    restart_gateway_if_running "$claw"
 }
 
 run_upgrade_flow() {
@@ -3821,7 +3831,9 @@ run_upgrade_flow() {
             ;;
     esac
 
-    prompt_gateway_restart
+    if [[ "$UPGRADE_TARGET" != "plugins" ]]; then
+        prompt_gateway_restart
+    fi
 
     log info "=== Upgrade completed ==="
     echo ""
@@ -4579,9 +4591,7 @@ show_channels_menu() {
                 upgrade_choice=$(clack_select "选择要升级的插件" "${upgrade_options[@]}")
                 case $upgrade_choice in
                     0)
-                        if upgrade_dingtalk_plugin; then
-                            echo -e "${INFO}i${NC} 插件升级后如 Gateway 正在运行，请手动重启使其生效: ${INFO}openclaw gateway restart${NC}"
-                        fi
+                        upgrade_dingtalk_plugin || true
                         ;;
                     1) should_pause=false ;;
                 esac

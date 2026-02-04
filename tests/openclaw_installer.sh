@@ -2279,6 +2279,29 @@ try {
 ' >/dev/null 2>&1
 }
 
+restart_gateway_if_running() {
+    local claw="${1:-}"
+    if [[ -z "$claw" ]]; then
+        claw="$(resolve_clawdbot_bin || true)"
+    fi
+    if [[ -z "$claw" ]]; then
+        return 0
+    fi
+
+    if ! is_gateway_daemon_loaded "$claw"; then
+        return 0
+    fi
+
+    spinner_start "重启 Gateway..."
+    if "$claw" gateway restart >/dev/null 2>&1; then
+        spinner_stop 0 "Gateway 已重启"
+        return 0
+    fi
+    spinner_stop 1 "Gateway 重启失败"
+    echo -e "${WARN}→${NC} 请手动重启 Gateway: ${INFO}openclaw gateway restart${NC}"
+    return 0
+}
+
 # ============================================
 # Interactive Configuration Wizard
 # ============================================
@@ -2498,12 +2521,14 @@ install_channel_plugin() {
     # Try openclaw plugins install first
     if "$claw" plugins install "$pkg" >/dev/null 2>&1; then
         spinner_stop 0 "${display_name} 插件已安装"
+        restart_gateway_if_running "$claw"
         return 0
     fi
 
     # Try update if already installed
     if "$claw" plugins update "$pkg" >/dev/null 2>&1; then
         spinner_stop 0 "${display_name} 插件已更新"
+        restart_gateway_if_running "$claw"
         return 0
     fi
 
@@ -2533,6 +2558,7 @@ install_channel_plugin() {
             if (cd "$plugin_dir" && npm install --omit=dev --no-fund --no-audit $npm_peer_deps_flag >/dev/null 2>&1); then
                 rm -rf "$temp_dir"
                 spinner_stop 0 "${display_name} 插件已安装"
+                restart_gateway_if_running "$claw"
                 return 0
             fi
         fi
@@ -3303,9 +3329,7 @@ EOF
         if [[ -z "$claw" ]]; then
             claw="$(resolve_clawdbot_bin || true)"
         fi
-        if [[ -n "$claw" ]] && is_gateway_daemon_loaded "$claw"; then
-            echo -e "${INFO}i${NC} Gateway service detected; restart with: ${INFO}openclaw gateway restart${NC}"
-        fi
+        restart_gateway_if_running "$claw"
     fi
 
     log info "=== Installation completed successfully ==="
@@ -3727,6 +3751,7 @@ upgrade_dingtalk_plugin() {
     if [[ -n "$claw" ]]; then
         if "$claw" plugins update "$CHANNEL_PKG_DINGTALK" >/dev/null 2>&1; then
             spinner_stop 0 "钉钉插件已升级到 $latest"
+            restart_gateway_if_running "$claw"
             return 0
         fi
     fi
@@ -3734,6 +3759,7 @@ upgrade_dingtalk_plugin() {
     # Fallback to npm
     if npm $npm_flags install -g "${CHANNEL_PKG_DINGTALK}@latest" >/dev/null 2>&1; then
         spinner_stop 0 "钉钉插件已升级到 $latest"
+        restart_gateway_if_running "$claw"
         return 0
     fi
 
@@ -3768,6 +3794,7 @@ upgrade_feishu_plugin() {
     if [[ -n "$claw" ]]; then
         if "$claw" plugins update "$CHANNEL_PKG_FEISHU" >/dev/null 2>&1; then
             spinner_stop 0 "飞书插件已升级到 $latest"
+            restart_gateway_if_running "$claw"
             return 0
         fi
     fi
@@ -3775,6 +3802,7 @@ upgrade_feishu_plugin() {
     # Fallback to npm
     if npm $npm_flags install -g "${CHANNEL_PKG_FEISHU}@latest" >/dev/null 2>&1; then
         spinner_stop 0 "飞书插件已升级到 $latest"
+        restart_gateway_if_running "$claw"
         return 0
     fi
 
@@ -3809,6 +3837,7 @@ upgrade_wecom_plugin() {
     if [[ -n "$claw" ]]; then
         if "$claw" plugins update "$CHANNEL_PKG_WECOM" >/dev/null 2>&1; then
             spinner_stop 0 "企业微信插件已升级到 $latest"
+            restart_gateway_if_running "$claw"
             return 0
         fi
     fi
@@ -3816,6 +3845,7 @@ upgrade_wecom_plugin() {
     # Fallback to npm
     if npm $npm_flags install -g "${CHANNEL_PKG_WECOM}@latest" >/dev/null 2>&1; then
         spinner_stop 0 "企业微信插件已升级到 $latest"
+        restart_gateway_if_running "$claw"
         return 0
     fi
 
@@ -3862,20 +3892,8 @@ prompt_gateway_restart() {
         return 0
     fi
 
-    if ! is_gateway_daemon_loaded "$claw"; then
-        return 0
-    fi
-
     echo ""
-    if is_promptable && [[ "$NO_PROMPT" != "1" ]]; then
-        if clack_confirm "检测到 Gateway 正在运行，是否重启？" "true"; then
-            spinner_start "重启 Gateway..."
-            "$claw" gateway restart >/dev/null 2>&1 || true
-            spinner_stop 0 "Gateway 已重启"
-        fi
-    else
-        echo -e "${INFO}i${NC} 请手动重启 Gateway: ${INFO}openclaw gateway restart${NC}"
-    fi
+    restart_gateway_if_running "$claw"
 }
 
 run_upgrade_flow() {
@@ -3907,7 +3925,9 @@ run_upgrade_flow() {
             ;;
     esac
 
-    prompt_gateway_restart
+    if [[ "$UPGRADE_TARGET" != "plugins" ]]; then
+        prompt_gateway_restart
+    fi
 
     log info "=== Upgrade completed ==="
     echo ""
