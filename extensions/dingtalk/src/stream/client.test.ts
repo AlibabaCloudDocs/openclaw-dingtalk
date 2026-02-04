@@ -20,6 +20,7 @@ vi.mock("dingtalk-stream", () => {
 
   const TOPIC_ROBOT = "/v1.0/im/bot/messages/get";
   const TOPIC_AI_GRAPH_API = "/v1.0/graph/api/invoke";
+  const TOPIC_CARD_INSTANCE_CALLBACK = "/v1.0/card/instances/callback";
 
   class DWClient {
     socketCallBackResponse = vi.fn();
@@ -44,7 +45,7 @@ vi.mock("dingtalk-stream", () => {
     registerAllEventListener(): void {}
   }
 
-  return { DWClient, EventAck, TOPIC_ROBOT, TOPIC_AI_GRAPH_API };
+  return { DWClient, EventAck, TOPIC_ROBOT, TOPIC_AI_GRAPH_API, TOPIC_CARD_INSTANCE_CALLBACK };
 });
 
 import { startDingTalkStreamClient } from "./client.js";
@@ -83,6 +84,20 @@ describe("startDingTalkStreamClient", () => {
     });
 
     expect(registeredCallbacks.has(TOPIC_ROBOT)).toBe(true);
+  });
+
+  it("registers card callback listener", async () => {
+    const onChatMessage = vi.fn();
+    const onCardCallback = vi.fn();
+
+    await startDingTalkStreamClient({
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+      onChatMessage,
+      onCardCallback,
+    });
+
+    expect(registeredCallbacks.has("/v1.0/card/instances/callback")).toBe(true);
   });
 
   it("calls onChatMessage when robot message received", async () => {
@@ -155,6 +170,41 @@ describe("startDingTalkStreamClient", () => {
       "msg-ack-test",
       { status: "received" }
     );
+  });
+
+  it("calls onCardCallback when card callback received", async () => {
+    const onChatMessage = vi.fn();
+    const onCardCallback = vi.fn().mockResolvedValue(undefined);
+
+    await startDingTalkStreamClient({
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+      onChatMessage,
+      onCardCallback,
+    });
+
+    const cardCallback = registeredCallbacks.get("/v1.0/card/instances/callback");
+    expect(cardCallback).toBeDefined();
+
+    const mockMessage = {
+      type: "CALLBACK",
+      headers: {
+        topic: "/v1.0/card/instances/callback",
+        eventType: "CARD_CALLBACK",
+        messageId: "card-msg-1",
+      },
+      data: JSON.stringify({
+        cardInstanceId: "card-123",
+        actionId: "btn_confirm",
+        openSpaceId: "dtv1.card//IM_GROUP.cid123",
+        userId: "user001",
+      }),
+    };
+
+    await cardCallback!(mockMessage);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onCardCallback).toHaveBeenCalled();
   });
 
   it("ignores non-chatbot messages", async () => {

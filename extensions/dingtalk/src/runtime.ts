@@ -26,6 +26,18 @@ export function getDingTalkRuntime(): PluginRuntime {
 const tokenManagerCache = new Map<string, TokenManager>();
 
 /**
+ * AI card streaming state cache keyed by sessionKey.
+ */
+export type CardStreamState = {
+  cardInstanceId?: string;
+  outTrackId: string;
+  templateId?: string;
+  lastUpdateAt: number;
+};
+
+const cardStreamCache = new Map<string, CardStreamState>();
+
+/**
  * Get or create a token manager for a DingTalk account.
  * Token managers are cached by accountId to reuse access tokens.
  */
@@ -65,4 +77,20 @@ export function clearTokenManagers(): void {
   }
   tokenManagerCache.clear();
   clearAllTokens();
+}
+
+export function getCardStreamState(sessionKey: string): CardStreamState | undefined {
+  return cardStreamCache.get(sessionKey);
+}
+
+export function setCardStreamState(sessionKey: string, state: CardStreamState): void {
+  cardStreamCache.set(sessionKey, state);
+}
+
+export function clearCardStreamState(sessionKey: string): void {
+  cardStreamCache.delete(sessionKey);
+}
+
+export function clearCardStreamStates(): void {
+  cardStreamCache.clear();
 }

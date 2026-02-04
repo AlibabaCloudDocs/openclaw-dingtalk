@@ -53,6 +53,32 @@ export interface DingTalkFile {
 }
 
 /**
+ * AI Card configuration.
+ */
+export interface DingTalkAICard {
+  /** Card template ID (fallbacks to account default if omitted) */
+  templateId?: string;
+  /** External tracking ID for idempotency */
+  outTrackId?: string;
+  /** Card instance ID for updates */
+  cardInstanceId?: string;
+  /** Card data payload */
+  cardData: Record<string, unknown>;
+  /** Private data payload */
+  privateData?: Record<string, unknown>;
+  /** openSpace payload (pass-through to API) */
+  openSpace?: Record<string, unknown>;
+  /** openSpaceId for delivery */
+  openSpaceId?: string;
+  /** Card callback type */
+  callbackType?: "STREAM" | "HTTP";
+  /** Create or update mode */
+  mode?: "create" | "update";
+  /** Enable streaming updates */
+  stream?: boolean;
+}
+
+/**
  * DingTalk-specific channelData payload.
  * Pass this in payload.channelData.dingtalk when using sendPayload.
  */
@@ -63,4 +89,6 @@ export interface DingTalkChannelData {
   image?: DingTalkImage;
   /** File configuration */
   file?: DingTalkFile;
+  /** AI Card configuration */
+  card?: DingTalkAICard;
 }

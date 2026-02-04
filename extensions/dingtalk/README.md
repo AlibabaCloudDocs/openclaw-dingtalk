@@ -98,6 +98,35 @@ clawdbot gateway
 | `showToolResult` | boolean | `false` | Show tool results |
 | `thinking` | string | `"off"` | Thinking mode (off/minimal/low/medium/high) |
 
+## AI Card (高级互动卡片)
+
+Enable AI Card capability via config:
+
+```json
+{
+  "channels": {
+    "clawdbot-dingtalk": {
+      "aiCard": {
+        "enabled": true,
+        "templateId": "your-template-id",
+        "callbackType": "STREAM",
+        "updateThrottleMs": 800,
+        "fallbackReplyMode": "markdown",
+        "openSpace": {
+          "imGroupOpenSpaceModel": {
+            "openConversationId": "cidxxx"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Notes:
+- `callbackType` should be `STREAM` to receive card callbacks over Stream API.
+- If `openSpace` / `openSpaceId` is missing, card delivery falls back to text.
+
 ## Chat Commands
 
 The following chat switches are supported in DingTalk:
