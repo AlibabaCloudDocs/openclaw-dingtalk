@@ -32,6 +32,7 @@ clawdbot
 openclaw
 dingtalk-stream-sdk-nodejs
 dingtalk-moltbot-connector
+dingtalk-stream-sdk
 
 
 .sisyphus/
