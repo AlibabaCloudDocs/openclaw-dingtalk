@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # Configuration
-REMOTE_HOST="${DINGTALK_TEST_HOST:-REDACTED_IP}"
+REMOTE_HOST="${DINGTALK_TEST_HOST:?Error: DINGTALK_TEST_HOST environment variable is required}"
 REMOTE_USER="${DINGTALK_TEST_USER:-root}"
 SSH_KEY="${DINGTALK_TEST_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 REMOTE_DIR="/opt/clawdbot-dingtalk-test"
