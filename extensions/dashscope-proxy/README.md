@@ -1,8 +1,9 @@
 # clawdbot-dashscope-proxy
 
-DashScope thinking proxy plugin for OpenClaw.
+DashScope provider plugin for OpenClaw (native thinking, no proxy).
 
-This plugin runs a local HTTP proxy that forwards OpenAI-compatible requests to DashScope and injects `enable_thinking` / `thinking_budget` for supported models.
+This plugin registers a DashScope provider and uses OpenClaw’s native `/think` command to enable
+thinking mode for supported Qwen models. No local HTTP proxy is required.
 
 ## Install
 
@@ -12,44 +13,62 @@ npm install -g clawdbot-dashscope-proxy --legacy-peer-deps
 
 ## Configure
 
-Enable the plugin and configure it under `plugins.entries.clawdbot-dashscope-proxy.config`:
+### Option A: Auth Wizard (Recommended)
 
-```json
-{
-  "plugins": {
-    "entries": {
-      "clawdbot-dashscope-proxy": {
-        "enabled": true,
-        "config": {
-          "bind": "127.0.0.1",
-          "port": 18788,
-          "targetBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-          "thinkingEnabled": true,
-          "thinkingBudget": 0,
-          "thinkingModels": "qwen-plus,qwen-plus-latest,qwen-flash,qwq-plus"
-        }
-      }
-    }
-  }
-}
+```bash
+openclaw auth dashscope
 ```
 
-Then, point your DashScope provider `baseUrl` to the local proxy:
+Follow the prompts for:
+
+- DashScope API Key
+- Base URL (default: `https://dashscope.aliyuncs.com/compatible-mode/v1`)
+- Model IDs (comma-separated)
+
+### Option B: Manual Config
 
 ```json
 {
   "models": {
     "providers": {
       "dashscope": {
-        "baseUrl": "http://127.0.0.1:18788/v1",
-        "apiKey": "sk-xxx"
+        "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "apiKey": "sk-xxx",
+        "api": "openai-completions",
+        "models": [
+          { "id": "qwen3-max-2026-01-23", "name": "Qwen3 Max Thinking", "contextWindow": 262144, "maxTokens": 32768, "reasoning": true, "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false } },
+          { "id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus", "contextWindow": 1000000, "maxTokens": 65536 }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": { "primary": "dashscope/qwen3-coder-plus" },
+      "models": {
+        "dashscope/qwen3-max-2026-01-23": {},
+        "dashscope/qwen3-coder-plus": {}
       }
     }
   }
 }
 ```
 
-This proxy **passes through the incoming `Authorization` header** to DashScope.
+## Thinking Mode
+
+Use OpenClaw’s native command to enable thinking per session:
+
+```
+/think on
+```
+
+## Migration Notes
+
+If you previously used the local proxy:
+
+- Remove any proxy base URL such as `http://127.0.0.1:18788/v1`.
+- Use the direct DashScope base URL instead.
+- You can delete old `plugins.entries.clawdbot-dashscope-proxy` proxy config.
 
 ## Start Gateway
 
