@@ -1638,8 +1638,8 @@ check_file_tools() {
 
 # Install file parsing tools for document content extraction
 install_file_tools() {
-    log info "Installing file parsing tools..."
-    spinner_start "Installing file parsing tools (pdftotext, pandoc, catdoc)..."
+    log info "Installing file parsing tools and fonts..."
+    spinner_start "Installing file parsing tools (pdftotext, pandoc, catdoc) and fonts..."
     local install_result=0
 
     if [[ "$OS" == "macos" ]]; then
@@ -1652,32 +1652,32 @@ install_file_tools() {
     elif [[ "$OS" == "linux" ]]; then
         require_sudo
         if command -v apt-get &>/dev/null; then
-            if apt_install install -y poppler-utils pandoc catdoc >/dev/null 2>&1; then
+            if apt_install install -y poppler-utils pandoc catdoc fonts-noto-cjk fonts-liberation >/dev/null 2>&1; then
                 install_result=0
             else
                 install_result=1
             fi
         elif command -v dnf &>/dev/null; then
-            if maybe_sudo dnf install -y poppler-utils pandoc catdoc >/dev/null 2>&1; then
+            if maybe_sudo dnf install -y poppler-utils pandoc catdoc google-noto-cjk-fonts liberation-fonts >/dev/null 2>&1; then
                 install_result=0
             else
                 install_result=1
             fi
         elif command -v yum &>/dev/null; then
-            if maybe_sudo yum install -y poppler-utils pandoc catdoc >/dev/null 2>&1; then
+            if maybe_sudo yum install -y poppler-utils pandoc catdoc google-noto-cjk-fonts liberation-fonts >/dev/null 2>&1; then
                 install_result=0
             else
                 install_result=1
             fi
         else
             spinner_stop 1 "Could not detect package manager for file tools"
-            echo -e "${INFO}i${NC} Please install poppler-utils, pandoc, catdoc manually."
+            echo -e "${INFO}i${NC} Please install poppler-utils, pandoc, catdoc, fonts-noto-cjk, fonts-liberation manually."
             return 1
         fi
     fi
 
     if [[ "$install_result" -eq 0 ]]; then
-        spinner_stop 0 "File parsing tools installed (pdftotext, pandoc, catdoc)"
+        spinner_stop 0 "File parsing tools and fonts installed"
     else
         spinner_stop 1 "Some file parsing tools installation failed"
     fi
@@ -3646,8 +3646,8 @@ upgrade_clawdbot_core() {
 
 upgrade_dingtalk_plugin() {
     local current=""
-    # Use the version from Openclaw-discoverable extension dirs, not npm -g.
-    current="$(get_openclaw_extensions_version "$CHANNEL_PKG_DINGTALK")"
+    # Plugins are installed via npm -g; `get_installed_version` covers both ~/.openclaw/extensions and npm -g.
+    current="$(get_installed_version "$CHANNEL_PKG_DINGTALK")"
     local latest=""
     local tag="latest"
     if [[ "$USE_BETA" == "1" ]]; then
@@ -3666,7 +3666,7 @@ upgrade_dingtalk_plugin() {
         echo -e "${WARN}→${NC} 升级钉钉插件: ${INFO}${current_label}${NC} → ${INFO}${latest:-$tag}${NC}"
     fi
 
-    # Always ensure the plugin is present in Openclaw's discovery dirs.
+    # Always ensure the plugin is installed and discoverable by Openclaw (npm -g + plugins.load.paths).
     if [[ -z "$current" ]] && ! config_references_plugin_or_channel "$CHANNEL_PKG_DINGTALK"; then
         echo -e "${MUTED}○${NC} 未检测到钉钉插件配置，跳过安装/升级"
         return 0
@@ -4578,7 +4578,11 @@ show_channels_menu() {
                 local upgrade_choice
                 upgrade_choice=$(clack_select "选择要升级的插件" "${upgrade_options[@]}")
                 case $upgrade_choice in
-                    0) upgrade_dingtalk_plugin ;;
+                    0)
+                        if upgrade_dingtalk_plugin; then
+                            echo -e "${INFO}i${NC} 插件升级后如 Gateway 正在运行，请手动重启使其生效: ${INFO}openclaw gateway restart${NC}"
+                        fi
+                        ;;
                     1) should_pause=false ;;
                 esac
                 ;;
