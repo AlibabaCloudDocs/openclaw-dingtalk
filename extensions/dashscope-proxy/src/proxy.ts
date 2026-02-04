@@ -8,6 +8,8 @@ import { createThinkingChecker } from "./thinking-models.js";
 import { normalizeBaseUrl } from "./provider.js";
 
 const THINKING_RE = /\bthinking\s*=\s*(off|minimal|low|medium|high|xhigh)\b/i;
+const REASONING_TAG_OPEN = "<thinking>";
+const REASONING_TAG_CLOSE = "</thinking>";
 
 function sanitizeBaseUrl(baseUrl: string): string {
     return baseUrl.replace(/\/+$/, "");
@@ -88,6 +90,112 @@ function resolveThinkLevel(body: Record<string, unknown>): ThinkLevel | undefine
     }
 
     return undefined;
+}
+
+function wrapReasoning(text: string): string {
+    return `${REASONING_TAG_OPEN}${text}${REASONING_TAG_CLOSE}`;
+}
+
+function rewriteReasoningFields(payload: unknown): boolean {
+    if (!payload || typeof payload !== "object") return false;
+    const record = payload as Record<string, unknown>;
+    const choices = record.choices;
+    if (!Array.isArray(choices)) return false;
+    let changed = false;
+    for (const choice of choices) {
+        if (!choice || typeof choice !== "object") continue;
+        const entry = choice as Record<string, unknown>;
+
+        if (entry.delta && typeof entry.delta === "object") {
+            const delta = entry.delta as Record<string, unknown>;
+            const reasoning = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
+            if (reasoning) {
+                const existing = typeof delta.content === "string" ? delta.content : "";
+                delta.content = existing
+                    ? `${existing}\n${wrapReasoning(reasoning)}`
+                    : wrapReasoning(reasoning);
+                delete delta.reasoning_content;
+                changed = true;
+            }
+        }
+
+        if (entry.message && typeof entry.message === "object") {
+            const message = entry.message as Record<string, unknown>;
+            const reasoning = typeof message.reasoning_content === "string" ? message.reasoning_content : "";
+            if (reasoning) {
+                const existing = typeof message.content === "string" ? message.content : "";
+                message.content = existing
+                    ? `${wrapReasoning(reasoning)}\n${existing}`
+                    : wrapReasoning(reasoning);
+                delete message.reasoning_content;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+function transformSseEvent(event: string): string {
+    if (!event.trim()) return event;
+    const lines = event.split("\n");
+    let changed = false;
+    const out = lines.map((line) => {
+        const match = line.match(/^data:\s?(.*)$/);
+        if (!match) return line;
+        const raw = match[1] ?? "";
+        if (!raw || raw.trim() === "[DONE]") return line;
+        try {
+            const payload = JSON.parse(raw);
+            if (rewriteReasoningFields(payload)) {
+                changed = true;
+                return `data: ${JSON.stringify(payload)}`;
+            }
+        } catch {
+            return line;
+        }
+        return line;
+    });
+    return changed ? out.join("\n") : event;
+}
+
+async function pipeStreamWithTransforms(
+    response: Response,
+    res: http.ServerResponse,
+): Promise<void> {
+    if (!response.body) {
+        res.end();
+        return;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let buffer = "";
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const normalized = buffer.replace(/\r\n/g, "\n");
+            let idx = normalized.indexOf("\n\n");
+            let lastIndex = 0;
+            while (idx !== -1) {
+                const event = normalized.slice(lastIndex, idx);
+                const transformed = transformSseEvent(event);
+                res.write(encoder.encode(`${transformed}\n\n`));
+                lastIndex = idx + 2;
+                idx = normalized.indexOf("\n\n", lastIndex);
+            }
+            buffer = normalized.slice(lastIndex);
+        }
+    } finally {
+        reader.releaseLock();
+    }
+    if (buffer.length > 0) {
+        const transformed = transformSseEvent(buffer.replace(/\r\n/g, "\n"));
+        res.write(encoder.encode(`${transformed}\n\n`));
+    }
+    res.end();
 }
 
 function buildForwardHeaders(req: http.IncomingMessage): Record<string, string> {
@@ -240,19 +348,19 @@ export async function createDashScopeProxy(
             res.writeHead(response.status, responseHeaders);
 
             if (isStream && response.body) {
-                const reader = response.body.getReader();
-                try {
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-                        res.write(value);
-                    }
-                } finally {
-                    reader.releaseLock();
-                    res.end();
-                }
+                await pipeStreamWithTransforms(response, res);
             } else {
                 const data = await response.arrayBuffer();
+                try {
+                    const text = Buffer.from(data).toString("utf-8");
+                    const parsed = JSON.parse(text);
+                    if (rewriteReasoningFields(parsed)) {
+                        res.end(JSON.stringify(parsed));
+                        return;
+                    }
+                } catch {
+                    // fall through: send raw body
+                }
                 res.end(Buffer.from(data));
             }
         } catch (err) {
