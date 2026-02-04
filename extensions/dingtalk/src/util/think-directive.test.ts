@@ -19,7 +19,7 @@ describe("extractThinkDirective", () => {
 
   it("supports /t on alias", () => {
     const res = extractThinkDirective("/t on hello");
-    expect(res.thinkLevel).toBe("low");
+    expect(res.thinkLevel).toBe("high");
     expect(res.cleaned).toBe("hello");
   });
 
@@ -34,7 +34,7 @@ describe("extractThinkOnceDirective", () => {
   it("parses /t! on", () => {
     const res = extractThinkOnceDirective("/t! on hello");
     expect(res.hasDirective).toBe(true);
-    expect(res.thinkLevel).toBe("low");
+    expect(res.thinkLevel).toBe("high");
     expect(res.cleaned).toBe("hello");
   });
 
@@ -45,4 +45,3 @@ describe("extractThinkOnceDirective", () => {
     expect(res.cleaned).toBe("hello");
   });
 });
-

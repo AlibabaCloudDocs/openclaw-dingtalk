@@ -1,6 +1,6 @@
 {
     "name": "clawdbot-dashscope-proxy",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "description": "DashScope provider plugin for OpenClaw (native thinking)",
     "type": "module",
     "main": "./dist/index.js",

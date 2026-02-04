@@ -65,7 +65,13 @@ Or use one-shot thinking for a single message:
 /t! on 请帮我分析这段代码
 ```
 
-Thinking levels: `off`, `minimal`, `low` (default for `on`), `medium`, `high`, `xhigh`.
+Thinking levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.  
+`/think on` maps to `high` (OpenClaw gateway "high").
+
+## Reasoning Visibility (Optional)
+
+Use `/reasoning on` to show model reasoning in replies (rendered as subtle Markdown blockquotes).  
+Use `/reasoning off` to hide it.
 
 ## Start Gateway
 
@@ -97,8 +103,9 @@ clawdbot gateway
 The following chat switches are supported in DingTalk:
 
 - `/new` - Reset session context
-- `/think [off|minimal|low|medium|high]` - Set thinking level
+- `/think [off|minimal|low|medium|high]` - Set thinking level (`/think on` => `high`)
 - `/t! [off|minimal|low|medium|high|on] <message>` - One-shot thinking (does not persist)
+- `/reasoning [on|off|stream]` - Toggle reasoning visibility
 - `/model <provider/model>` - Switch model
 - `/models [provider]` - List providers or models under a provider
 - `/verbose on|off|full` - Toggle non-final updates (tool/block)

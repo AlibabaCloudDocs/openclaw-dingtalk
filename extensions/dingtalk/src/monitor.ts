@@ -45,9 +45,38 @@ function deriveProvider(model: string | undefined): string | undefined {
 
 type VerboseOverride = "off" | "on" | "full";
 
-const ALLOWED_COMMAND_RE = /(?:^|\s)\/(new|think|thinking|model|models|verbose|v)(?=$|\s|:)/i;
+const ALLOWED_COMMAND_RE = /(?:^|\s)\/(new|think|thinking|reasoning|reason|model|models|verbose|v)(?=$|\s|:)/i;
 const VERBOSE_COMMAND_RE = /(?:^|\s)\/(verbose|v)(?=$|\s|:)/i;
 const RESET_COMMAND_RE = /(?:^|\s)\/new(?=$|\s|:)/i;
+
+const REASONING_HEADER_RE = /^Reasoning:\s*/i;
+
+function isReasoningPayload(text: string): boolean {
+  const trimmed = text.trimStart();
+  if (!REASONING_HEADER_RE.test(trimmed)) {
+    return false;
+  }
+  const nonEmpty = trimmed
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (nonEmpty.length < 2) {
+    return false;
+  }
+  if (!REASONING_HEADER_RE.test(nonEmpty[0])) {
+    return false;
+  }
+  return nonEmpty[1]?.startsWith("_") ?? false;
+}
+
+function softenReasoningMarkdown(text: string): string {
+  const lines = text.split("\n");
+  const firstNonEmpty = lines.find((line) => line.trim().length > 0);
+  if (firstNonEmpty && firstNonEmpty.trimStart().startsWith(">")) {
+    return text;
+  }
+  return lines.map((line) => (line.trim().length ? `> ${line}` : ">")).join("\n");
+}
 
 function hasAllowedCommandToken(text?: string): boolean {
   if (!text?.trim()) return false;
@@ -179,6 +208,14 @@ export async function monitorDingTalkProvider(
       ctx: opts.ctx,
       cfg: dispatchConfig,
       dispatcherOptions: opts.dispatcherOptions as any,
+      replyOptions: {
+        onReasoningStream: async (payload) => {
+          if (!payload?.text && (!payload?.mediaUrls || payload.mediaUrls.length === 0)) {
+            return;
+          }
+          await opts.dispatcherOptions.deliver(payload, { kind: "block" });
+        },
+      },
     });
   }
 
@@ -523,6 +560,10 @@ export async function monitorDingTalkProvider(
         if (!processedText) {
           log?.debug?.({ original: text.slice(0, 30) }, "Empty after stripping directives");
           return;
+        }
+
+        if (isReasoningPayload(processedText)) {
+          processedText = softenReasoningMarkdown(processedText);
         }
 
         // ==== Media Protocol Processing ====
