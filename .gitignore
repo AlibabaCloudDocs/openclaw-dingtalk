@@ -42,3 +42,8 @@ tests/test.log
 
 # Test coverage
 coverage/
+
+# Agent Instructions
+AGENTS.md
+CLAUDE.md
+GEMINI.md
