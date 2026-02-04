@@ -1997,6 +1997,24 @@ warn_clawdbot_not_found() {
 
 resolve_clawdbot_bin() {
     refresh_shell_command_cache
+    if [[ -n "${CLAWDBOT_BIN:-}" && -x "${CLAWDBOT_BIN:-}" ]]; then
+        echo "$CLAWDBOT_BIN"
+        return 0
+    fi
+
+    # Prefer the git-install wrapper if present.
+    if [[ -x "$HOME/.local/bin/openclaw" ]]; then
+        echo "$HOME/.local/bin/openclaw"
+        return 0
+    fi
+
+    local npm_bin=""
+    npm_bin="$(npm_global_bin_dir || true)"
+    if [[ -n "$npm_bin" && -x "${npm_bin}/openclaw" ]]; then
+        echo "${npm_bin}/openclaw"
+        return 0
+    fi
+
     local resolved=""
     resolved="$(type -P openclaw 2>/dev/null || true)"
     if [[ -n "$resolved" && -x "$resolved" ]]; then
@@ -2009,13 +2027,6 @@ resolve_clawdbot_bin() {
     resolved="$(type -P openclaw 2>/dev/null || true)"
     if [[ -n "$resolved" && -x "$resolved" ]]; then
         echo "$resolved"
-        return 0
-    fi
-
-    local npm_bin=""
-    npm_bin="$(npm_global_bin_dir || true)"
-    if [[ -n "$npm_bin" && -x "${npm_bin}/openclaw" ]]; then
-        echo "${npm_bin}/openclaw"
         return 0
     fi
 
@@ -2228,8 +2239,8 @@ run_bootstrap_onboarding_if_needed() {
 resolve_clawdbot_version() {
     local version=""
     local claw="${CLAWDBOT_BIN:-}"
-    if [[ -z "$claw" ]] && command -v openclaw &> /dev/null; then
-        claw="$(command -v openclaw)"
+    if [[ -z "$claw" ]]; then
+        claw="$(resolve_clawdbot_bin || true)"
     fi
 
     # First try to get version from package.json (more reliable for npm comparison)
@@ -2368,6 +2379,7 @@ configure_channel_dingtalk() {
 # Install a channel plugin
 install_channel_plugin() {
     local channel="$1"
+    local spec_override="${2:-}"
     local pkg=""
     pkg="$(get_channel_package "$channel")"
 
@@ -2391,59 +2403,30 @@ install_channel_plugin() {
 
     local display_name=""
     display_name="$(get_channel_display_name "$channel")"
+    local spec="${pkg}"
+    if [[ -n "$spec_override" ]]; then
+        spec="$spec_override"
+    fi
     local npm_peer_deps_flag=""
     if [[ "${NPM_LEGACY_PEER_DEPS:-0}" == "1" ]]; then
         npm_peer_deps_flag="--legacy-peer-deps"
     fi
 
-    spinner_start "安装 ${display_name} 插件..."
+    spinner_start "安装 ${display_name} 插件（npm 全局）..."
 
-    # Try openclaw plugins install first
-    if "$claw" plugins install "$pkg" >/dev/null 2>&1; then
-        spinner_stop 0 "${display_name} 插件已安装"
-        return 0
+    # Prefer npm global install for stability. Openclaw does NOT auto-discover npm global node_modules,
+    # so we also patch ~/.openclaw/openclaw.json to include plugins.load.paths for this package.
+    local npm_flags="--loglevel $NPM_LOGLEVEL ${NPM_SILENT_FLAG:+$NPM_SILENT_FLAG} --no-fund --no-audit $npm_peer_deps_flag --prefer-online"
+    if ! npm $npm_flags install -g "$spec" >/dev/null 2>&1; then
+        spinner_stop 1 "${display_name} 插件安装失败（npm install -g）"
+        return 1
     fi
 
-    # Try update if already installed
-    if "$claw" plugins update "$pkg" >/dev/null 2>&1; then
-        spinner_stop 0 "${display_name} 插件已更新"
-        return 0
-    fi
+    # Patch config to load the global plugin directory (so config stays valid and plugin is discoverable).
+    ensure_openclaw_plugin_load_path_from_npm_global "$pkg" || true
 
-    # Fallback: install to ~/.openclaw/extensions/ directly
-    # This handles cases where config is invalid or plugins command fails
-    local extensions_dir="${HOME}/.openclaw/extensions"
-    local plugin_dir="${extensions_dir}/${pkg}"
-    local temp_dir=""
-    temp_dir="$(mktemp -d)"
-
-    spinner_stop 0 "尝试直接安装..."
-    spinner_start "下载 ${display_name} 插件..."
-
-    # Download package to temp directory
-    if npm pack "$pkg" --pack-destination "$temp_dir" >/dev/null 2>&1; then
-        local tarball=""
-        tarball="$(ls "$temp_dir"/*.tgz 2>/dev/null | head -1)"
-        if [[ -n "$tarball" ]]; then
-            mkdir -p "$extensions_dir"
-            rm -rf "$plugin_dir"
-            mkdir -p "$plugin_dir"
-            tar -xzf "$tarball" -C "$plugin_dir" --strip-components=1 2>/dev/null
-
-            # Install dependencies
-            spinner_stop 0 "正在安装依赖..."
-            spinner_start "安装 ${display_name} 依赖..."
-            if (cd "$plugin_dir" && npm install --omit=dev --no-fund --no-audit $npm_peer_deps_flag >/dev/null 2>&1); then
-                rm -rf "$temp_dir"
-                spinner_stop 0 "${display_name} 插件已安装"
-                return 0
-            fi
-        fi
-    fi
-
-    rm -rf "$temp_dir"
-    spinner_stop 1 "${display_name} 插件安装失败"
-    return 1
+    spinner_stop 0 "${display_name} 插件已安装"
+    return 0
 }
 
 # Remove a channel plugin
@@ -3155,6 +3138,190 @@ get_installed_version() {
     echo "$version"
 }
 
+resolve_openclaw_agent_workspace_dir() {
+    # Best-effort: read agents.defaults.workspace from config; fallback to ~/.openclaw/workspace
+    local cfg="${CONFIG_FILE:-$HOME/.openclaw/openclaw.json}"
+    if [[ -f "$cfg" ]] && command -v node &>/dev/null; then
+        local v=""
+        v="$(CONFIG_FILE="$cfg" node -e '
+const fs = require("fs");
+const p = process.env.CONFIG_FILE;
+let cfg;
+try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch { process.exit(0); }
+const w = cfg?.agents?.defaults?.workspace;
+if (typeof w === "string" && w.trim()) process.stdout.write(w.trim());
+' 2>/dev/null || true)"
+        if [[ -n "$v" ]]; then
+            echo "$v"
+            return 0
+        fi
+    fi
+    echo "$HOME/.openclaw/workspace"
+    return 0
+}
+
+ensure_openclaw_plugin_load_path_from_npm_global() {
+    # Ensure ~/.openclaw/openclaw.json contains plugins.load.paths entry pointing to the
+    # globally-installed npm package dir (npm root -g / <pkg>).
+    #
+    # This is required because Openclaw does NOT automatically scan npm global node_modules.
+    local pkg="$1"
+    local cfg="${CONFIG_FILE:-$HOME/.openclaw/openclaw.json}"
+
+    if [[ -z "$pkg" || ! -f "$cfg" ]]; then
+        return 1
+    fi
+    if ! command -v npm &>/dev/null || ! command -v node &>/dev/null; then
+        return 1
+    fi
+
+    local npm_root=""
+    npm_root="$(npm root -g 2>/dev/null || true)"
+    if [[ -z "$npm_root" ]]; then
+        return 1
+    fi
+
+    local plugin_dir="${npm_root%/}/${pkg}"
+    if [[ ! -d "$plugin_dir" ]]; then
+        return 1
+    fi
+
+    CONFIG_FILE="$cfg" PKG="$pkg" PLUGIN_DIR="$plugin_dir" node -e '
+const fs = require("fs");
+const path = require("path");
+
+const cfgPath = process.env.CONFIG_FILE;
+const pkg = String(process.env.PKG || "").trim();
+const pluginDir = String(process.env.PLUGIN_DIR || "").trim();
+if (!cfgPath || !pkg || !pluginDir) process.exit(1);
+
+let cfg;
+try { cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8")); } catch { process.exit(2); }
+
+cfg.plugins ||= {};
+cfg.plugins.load ||= {};
+
+let paths = Array.isArray(cfg.plugins.load.paths) ? cfg.plugins.load.paths : [];
+paths = paths
+  .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+  .filter(Boolean);
+
+const resolvedPluginDir = path.resolve(pluginDir);
+
+const isSame = (p) => {
+  try { return path.resolve(p) === resolvedPluginDir; } catch { return false; }
+};
+
+const looksLikeGlobalPkgPath = (p) => {
+  const normalized = p.replace(/\\\\/g, "/");
+  return normalized.includes("/node_modules/") && normalized.endsWith("/" + pkg);
+};
+
+const exists = (p) => {
+  try { return fs.existsSync(p); } catch { return false; }
+};
+
+// Remove duplicates, and prune stale global paths for this package if they no longer exist.
+paths = paths.filter((p) => {
+  if (isSame(p)) return false;
+  if (looksLikeGlobalPkgPath(p) && !exists(p)) return false;
+  return true;
+});
+
+// Prepend so config-origin overrides workspace/global/bundled copies.
+paths = [pluginDir, ...paths];
+cfg.plugins.load.paths = paths;
+
+fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+' 2>/dev/null || true
+
+    return 0
+}
+
+get_openclaw_extensions_version() {
+    # Return plugin version only if it's discoverable by Openclaw's default discovery dirs
+    # (workspace/.openclaw/extensions or ~/.openclaw/extensions). Does NOT report npm -g versions.
+    local pkg="$1"
+    local v=""
+
+    local global_dir="$HOME/.openclaw/extensions/$pkg"
+    if [[ -f "$global_dir/package.json" ]]; then
+        v="$(grep '"version"' "$global_dir/package.json" 2>/dev/null | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)"
+    fi
+    if [[ -n "$v" ]]; then
+        echo "$v"
+        return 0
+    fi
+
+    local ws=""
+    ws="$(resolve_openclaw_agent_workspace_dir)"
+    local ws_dir="${ws%/}/.openclaw/extensions/$pkg"
+    if [[ -f "$ws_dir/package.json" ]]; then
+        v="$(grep '"version"' "$ws_dir/package.json" 2>/dev/null | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)"
+    fi
+
+    echo "$v"
+    return 0
+}
+
+config_references_plugin_or_channel() {
+    local plugin_id="$1"
+    local cfg="${CONFIG_FILE:-$HOME/.openclaw/openclaw.json}"
+    if [[ -z "$plugin_id" || ! -f "$cfg" || ! "$(command -v node 2>/dev/null)" ]]; then
+        return 1
+    fi
+    CONFIG_FILE="$cfg" PLUGIN_ID="$plugin_id" node -e '
+const fs = require("fs");
+const p = process.env.CONFIG_FILE;
+const id = String(process.env.PLUGIN_ID || "").trim();
+if (!id) process.exit(1);
+let cfg;
+try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch { process.exit(1); }
+const hasPlugin = Boolean(cfg?.plugins?.entries && Object.prototype.hasOwnProperty.call(cfg.plugins.entries, id));
+const hasChannel = Boolean(cfg?.channels && Object.prototype.hasOwnProperty.call(cfg.channels, id));
+process.exit(hasPlugin || hasChannel ? 0 : 2);
+' >/dev/null 2>&1
+}
+
+get_openclaw_plugin_loaded_meta() {
+    local plugin_id="$1"
+    local claw="${CLAWDBOT_BIN:-}"
+    if [[ -z "$claw" ]]; then
+        claw="$(resolve_clawdbot_bin || true)"
+    fi
+    if [[ -z "$claw" ]]; then
+        return 1
+    fi
+
+    local json=""
+    json="$("$claw" plugins list --json 2>/dev/null || true)"
+    if [[ -z "$json" ]]; then
+        return 1
+    fi
+
+    # Print a compact JSON object: { id, status, version, origin, source, error }
+    # (The script caller can parse or display it.)
+    printf '%s' "$json" | PLUGIN_ID="$plugin_id" node -e '
+const fs = require("fs");
+const id = (process.env.PLUGIN_ID || "").trim();
+if (!id) process.exit(1);
+let data;
+try { data = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(1); }
+const plugins = Array.isArray(data?.plugins) ? data.plugins : [];
+const p = plugins.find((x) => x?.id === id || x?.name === id);
+if (!p) process.exit(2);
+const out = {
+  id: p.id ?? id,
+  status: p.status ?? "",
+  version: p.version ?? "",
+  origin: p.origin ?? "",
+  source: p.source ?? "",
+  error: p.error ?? "",
+};
+process.stdout.write(JSON.stringify(out));
+' 2>/dev/null
+}
+
 get_latest_version() {
     local pkg="$1"
     local tag="${2:-latest}"
@@ -3479,37 +3646,94 @@ upgrade_clawdbot_core() {
 
 upgrade_dingtalk_plugin() {
     local current=""
-    current="$(get_installed_version "$CHANNEL_PKG_DINGTALK")"
+    # Use the version from Openclaw-discoverable extension dirs, not npm -g.
+    current="$(get_openclaw_extensions_version "$CHANNEL_PKG_DINGTALK")"
     local latest=""
-    latest="$(get_latest_version "$CHANNEL_PKG_DINGTALK" "latest")"
-
-    if [[ -z "$current" ]]; then
-        echo -e "${MUTED}○${NC} 钉钉插件未安装"
-        return 0
+    local tag="latest"
+    if [[ "$USE_BETA" == "1" ]]; then
+        local beta_version=""
+        beta_version="$(get_latest_version "$CHANNEL_PKG_DINGTALK" "beta")"
+        if [[ -n "$beta_version" ]]; then
+            tag="beta"
+        fi
     fi
+    latest="$(get_latest_version "$CHANNEL_PKG_DINGTALK" "$tag")"
 
-    if [[ "$current" == "$latest" ]]; then
+    local current_label="${current:-未安装}"
+    if [[ -n "$latest" && "$current" == "$latest" ]]; then
         echo -e "${SUCCESS}✓${NC} 钉钉插件已是最新版本 (${INFO}$current${NC})"
+    else
+        echo -e "${WARN}→${NC} 升级钉钉插件: ${INFO}${current_label}${NC} → ${INFO}${latest:-$tag}${NC}"
+    fi
+
+    # Always ensure the plugin is present in Openclaw's discovery dirs.
+    if [[ -z "$current" ]] && ! config_references_plugin_or_channel "$CHANNEL_PKG_DINGTALK"; then
+        echo -e "${MUTED}○${NC} 未检测到钉钉插件配置，跳过安装/升级"
         return 0
     fi
-
-    spinner_start "升级钉钉插件: $current → $latest"
-    local npm_peer_deps_flag=""
-    if [[ "${NPM_LEGACY_PEER_DEPS:-0}" == "1" ]]; then
-        npm_peer_deps_flag="--legacy-peer-deps"
-    fi
-    local npm_flags="--loglevel $NPM_LOGLEVEL ${NPM_SILENT_FLAG:+$NPM_SILENT_FLAG} --no-fund --no-audit $npm_peer_deps_flag"
-
-    # Use npm install -g directly (openclaw plugins update requires install records which may not exist)
-    if npm $npm_flags install -g "${CHANNEL_PKG_DINGTALK}@latest" >/dev/null 2>&1; then
-        # Clear cached extension directory to ensure version check reads from global npm
-        rm -rf "$HOME/.openclaw/extensions/$CHANNEL_PKG_DINGTALK" 2>/dev/null || true
-        spinner_stop 0 "钉钉插件已升级到 $latest"
-        return 0
+    if ! install_channel_plugin dingtalk "${CHANNEL_PKG_DINGTALK}@${tag}"; then
+        return 1
     fi
 
-    spinner_stop 1 "升级失败"
-    return 1
+    # Verify the actually loaded plugin version/source (catches shadowing by workspace/bundled plugins).
+    if [[ -n "$latest" ]]; then
+        local meta=""
+        meta="$(get_openclaw_plugin_loaded_meta "$CHANNEL_PKG_DINGTALK" || true)"
+        if [[ -n "$meta" ]]; then
+            local loaded_version=""
+            loaded_version="$(printf '%s' "$meta" | node -e '
+const fs = require("fs");
+let obj = {};
+try { obj = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(0); }
+process.stdout.write(String(obj?.version ?? "").trim());
+' 2>/dev/null || true)"
+            if [[ -n "$loaded_version" && "$loaded_version" != "$latest" ]]; then
+                echo -e "${WARN}→${NC} 注意：Openclaw 当前实际加载的钉钉插件版本为 ${INFO}${loaded_version}${NC}（期望: ${INFO}${latest}${NC}）"
+                echo -e "${MUTED}   可能原因：workspace 插件覆盖 / bundled 插件覆盖 / 仍未重启 Gateway。${NC}"
+                echo -e "${MUTED}   解析信息: ${meta}${NC}"
+
+                echo -e "${WARN}→${NC} 尝试强制重装到 ${INFO}~/.openclaw/extensions/${CHANNEL_PKG_DINGTALK}${NC}..."
+                rm -rf "$HOME/.openclaw/extensions/$CHANNEL_PKG_DINGTALK" 2>/dev/null || true
+
+                # Also remove a workspace override if present (workspace origin has higher priority than global).
+                local ws=""
+                ws="$(CONFIG_FILE="$HOME/.openclaw/openclaw.json" node -e '
+const fs = require("fs");
+const p = process.env.CONFIG_FILE;
+let cfg;
+try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch { process.exit(0); }
+const v = cfg?.agents?.defaults?.workspace;
+if (typeof v === "string" && v.trim()) process.stdout.write(v.trim());
+' 2>/dev/null || true)"
+                if [[ -z "$ws" ]]; then
+                    ws="$HOME/.openclaw/workspace"
+                fi
+                rm -rf "${ws%/}/.openclaw/extensions/$CHANNEL_PKG_DINGTALK" 2>/dev/null || true
+
+                if install_channel_plugin dingtalk "${CHANNEL_PKG_DINGTALK}@${tag}"; then
+                    local meta2=""
+                    meta2="$(get_openclaw_plugin_loaded_meta "$CHANNEL_PKG_DINGTALK" || true)"
+                    local loaded2=""
+                    loaded2="$(printf '%s' "$meta2" | node -e '
+const fs = require("fs");
+let obj = {};
+try { obj = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(0); }
+process.stdout.write(String(obj?.version ?? "").trim());
+' 2>/dev/null || true)"
+                    if [[ -n "$loaded2" && "$loaded2" == "$latest" ]]; then
+                        echo -e "${SUCCESS}✓${NC} 钉钉插件已强制更新到 ${INFO}${loaded2}${NC}"
+                    else
+                        echo -e "${WARN}→${NC} 强制重装后仍未命中期望版本（期望: ${INFO}${latest}${NC}）"
+                        if [[ -n "$meta2" ]]; then
+                            echo -e "${MUTED}   解析信息: ${meta2}${NC}"
+                        fi
+                    fi
+                fi
+            fi
+        fi
+    fi
+
+    return 0
 }
 
 upgrade_to_beta() {
@@ -4213,24 +4437,14 @@ repair_reinstall_clawdbot() {
 }
 
 repair_reinstall_dingtalk() {
-    local claw=""
-    claw="$(resolve_clawdbot_bin || true)"
-    local npm_peer_deps_flag=""
-    if [[ "${NPM_LEGACY_PEER_DEPS:-0}" == "1" ]]; then
-        npm_peer_deps_flag="--legacy-peer-deps"
+    echo -e "${WARN}→${NC} 重新安装钉钉插件..."
+    # Ensure plugin is installed into Openclaw's discovery dirs (workspace/global extensions).
+    if install_channel_plugin dingtalk "${CHANNEL_PKG_DINGTALK}@latest"; then
+        echo -e "${SUCCESS}✓${NC} 钉钉插件已重新安装"
+        return 0
     fi
-    local npm_flags="--loglevel $NPM_LOGLEVEL ${NPM_SILENT_FLAG:+$NPM_SILENT_FLAG} --no-fund --no-audit $npm_peer_deps_flag"
-
-    spinner_start "重新安装钉钉插件..."
-    npm uninstall -g clawdbot-dingtalk 2>/dev/null || true
-
-    if [[ -n "$claw" ]]; then
-        "$claw" plugins install clawdbot-dingtalk >/dev/null 2>&1 || npm $npm_flags install -g clawdbot-dingtalk >/dev/null 2>&1 || true
-    else
-        npm $npm_flags install -g clawdbot-dingtalk >/dev/null 2>&1 || true
-    fi
-
-    spinner_stop 0 "钉钉插件已重新安装"
+    echo -e "${ERROR}✗${NC} 钉钉插件重新安装失败"
+    return 1
 }
 
 repair_clear_cache() {
