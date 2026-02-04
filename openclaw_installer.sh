@@ -858,6 +858,15 @@ Examples:
 EOF
 }
 
+require_arg() {
+    local flag="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        echo -e "${ERROR}Error: ${flag} requires a value${NC}" >&2
+        exit 2
+    fi
+}
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -941,10 +950,12 @@ parse_args() {
                 shift
                 ;;
             --install-method|--method)
+                require_arg "$1" "${2:-}"
                 INSTALL_METHOD="$2"
                 shift 2
                 ;;
             --version)
+                require_arg "$1" "${2:-}"
                 CLAWDBOT_VERSION="$2"
                 shift 2
                 ;;
@@ -961,6 +972,7 @@ parse_args() {
                 shift
                 ;;
             --git-dir|--dir)
+                require_arg "$1" "${2:-}"
                 GIT_DIR="$2"
                 shift 2
                 ;;
@@ -982,14 +994,17 @@ parse_args() {
                 ;;
             --log-file)
                 LOG_ENABLED=1
+                require_arg "$1" "${2:-}"
                 LOG_FILE="$2"
                 shift 2
                 ;;
             --log-level)
+                require_arg "$1" "${2:-}"
                 LOG_LEVEL="$2"
                 shift 2
                 ;;
             --log-history)
+                require_arg "$1" "${2:-}"
                 LOG_HISTORY="$2"
                 shift 2
                 ;;
@@ -1012,16 +1027,19 @@ parse_args() {
             # Channel management options
             --channel-add)
                 CHANNEL_ACTION="add"
+                require_arg "$1" "${2:-}"
                 CHANNEL_TARGET="$2"
                 shift 2
                 ;;
             --channel-remove)
                 CHANNEL_ACTION="remove"
+                require_arg "$1" "${2:-}"
                 CHANNEL_TARGET="$2"
                 shift 2
                 ;;
             --channel-configure)
                 CHANNEL_ACTION="configure"
+                require_arg "$1" "${2:-}"
                 CHANNEL_TARGET="$2"
                 shift 2
                 ;;
@@ -1712,7 +1730,7 @@ check_python() {
     local major="${version%%.*}"
     local minor="${version#*.}"
 
-    if [[ "$major" -ge 3 && "$minor" -ge 12 ]]; then
+    if [[ "$major" -gt 3 || ( "$major" -eq 3 && "$minor" -ge 12 ) ]]; then
         echo -e "${SUCCESS}✓${NC} Python ${version} already installed ($python_cmd)"
         return 0
     else
@@ -2356,7 +2374,8 @@ configure_channel_dingtalk() {
     fi
 
     printf "${ACCENT}◆${NC} 钉钉 Client Secret: " > /dev/tty
-    read -r dingtalk_client_secret < /dev/tty || true
+    read -rs dingtalk_client_secret < /dev/tty || true
+    printf "\n" > /dev/tty
     if [[ -z "$dingtalk_client_secret" ]]; then
         echo -e "${ERROR}◆${NC} Client Secret 不能为空"
         return 1
@@ -2627,7 +2646,8 @@ configure_clawdbot_interactive() {
 
     local dashscope_api_key=""
     printf "${ACCENT}◆${NC} 百炼 API Key: " > /dev/tty
-    read -r dashscope_api_key < /dev/tty || true
+    read -rs dashscope_api_key < /dev/tty || true
+    printf "\n" > /dev/tty
     if [[ -z "$dashscope_api_key" ]]; then
         echo -e "${ERROR}◆${NC} API Key 不能为空"
         return 1
@@ -3996,7 +4016,7 @@ config_set() {
     
     mkdir -p "$CONFIG_DIR"
     
-    node -e "
+    CONFIG_VALUE="$value" node -e "
         const fs = require('fs');
         let cfg = {};
         try { 
@@ -4013,11 +4033,12 @@ config_set() {
         }
         
         // Try to parse as JSON, otherwise use as string
+        const rawValue = process.env.CONFIG_VALUE ?? '';
         let parsedValue;
         try {
-            parsedValue = JSON.parse(\`$value\`);
+            parsedValue = JSON.parse(rawValue);
         } catch {
-            parsedValue = \`$value\`;
+            parsedValue = rawValue;
         }
         obj[keys[keys.length - 1]] = parsedValue;
         
