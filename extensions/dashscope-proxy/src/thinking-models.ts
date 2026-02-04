@@ -8,6 +8,7 @@
  */
 export const DEFAULT_THINKING_MODELS = new Set([
     // Qwen 系列
+    "qwen3-max",
     "qwen-plus",
     "qwen-plus-latest",
     "qwen-flash",
