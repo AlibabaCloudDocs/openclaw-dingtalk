@@ -1,106 +1,87 @@
-import type { OpenClawPluginService } from "openclaw/plugin-sdk";
+import type { OpenClawConfig } from "openclaw/plugin-sdk";
 
-import type { DashScopeProxyConfig, ProxyHandle, ProxyLogger } from "./types.js";
 import { createDashScopeProxy } from "./proxy.js";
+import type { DashScopeProxyConfig, ProxyHandle, ProxyLogger } from "./types.js";
+import { normalizeBaseUrl } from "./provider.js";
 
+const PLUGIN_ID = "clawdbot-dashscope-proxy";
+const DEFAULT_BIND = "127.0.0.1";
+const DEFAULT_PORT = 18788;
 const DEFAULT_TARGET_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+type RawPluginConfig = Record<string, unknown> | undefined;
+
+function readString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function asString(value: unknown): string | undefined {
-    if (typeof value === "string") return value;
+function readNumber(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return parsed;
+    }
     return undefined;
 }
 
-function asNumber(value: unknown): number | undefined {
-    if (typeof value !== "number") return undefined;
-    if (Number.isNaN(value)) return undefined;
-    return value;
+function readBoolean(value: unknown): boolean | undefined {
+    return typeof value === "boolean" ? value : undefined;
 }
 
-function asBoolean(value: unknown): boolean | undefined {
-    if (typeof value === "boolean") return value;
-    return undefined;
+function resolveThinkingModels(config: OpenClawConfig, pluginConfig: RawPluginConfig): string | undefined {
+    const explicit = readString(pluginConfig?.thinkingModels);
+    if (explicit) return explicit;
+    const provider = (config as { models?: { providers?: Record<string, unknown> } }).models?.providers?.dashscope;
+    const models = provider && typeof provider === "object"
+        ? (provider as { models?: Array<Record<string, unknown>> }).models
+        : undefined;
+    if (!Array.isArray(models)) return undefined;
+    const ids = models
+        .filter((entry) => entry && typeof entry === "object" && (entry as { reasoning?: unknown }).reasoning === true)
+        .map((entry) => (entry as { id?: unknown }).id)
+        .filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+    return ids.length > 0 ? ids.join(",") : undefined;
 }
 
-function adaptLogger(logger: { info?: (msg: string) => void; debug?: (msg: string) => void; warn?: (msg: string) => void; error?: (msg: string) => void }): ProxyLogger {
+function resolveProxyConfig(config: OpenClawConfig): DashScopeProxyConfig {
+    const entry = (config as { plugins?: { entries?: Record<string, unknown> } }).plugins?.entries?.[PLUGIN_ID];
+    const pluginConfig =
+        entry && typeof entry === "object"
+            ? (entry as { config?: Record<string, unknown> }).config
+            : undefined;
+
+    const bind = readString(pluginConfig?.bind) ?? DEFAULT_BIND;
+    const port = readNumber(pluginConfig?.port) ?? DEFAULT_PORT;
+    const targetBaseUrl = normalizeBaseUrl(readString(pluginConfig?.targetBaseUrl) ?? DEFAULT_TARGET_BASE_URL);
+    const thinkingEnabled = readBoolean(pluginConfig?.thinkingEnabled) ?? true;
+    const thinkingBudget = readNumber(pluginConfig?.thinkingBudget) ?? 0;
+    const thinkingModels = resolveThinkingModels(config, pluginConfig);
+    const logRequestBody = readBoolean(pluginConfig?.logRequestBody) ?? false;
+
     return {
-        info: (obj, msg) => {
-            const message = msg ?? (typeof obj === "string" ? obj : JSON.stringify(obj));
-            logger.info?.(message);
-        },
-        debug: (obj, msg) => {
-            const message = msg ?? (typeof obj === "string" ? obj : JSON.stringify(obj));
-            logger.debug?.(message);
-        },
-        warn: (obj, msg) => {
-            const message = msg ?? (typeof obj === "string" ? obj : JSON.stringify(obj));
-            logger.warn?.(message);
-        },
-        error: (obj, msg) => {
-            const message = msg ?? (typeof obj === "string" ? obj : JSON.stringify(obj));
-            logger.error?.(message);
-        },
+        bind,
+        port,
+        targetBaseUrl,
+        thinkingEnabled,
+        thinkingBudget,
+        thinkingModels,
+        logRequestBody,
     };
 }
 
-export function createDashScopeProxyService(params: {
-    pluginConfig?: Record<string, unknown>;
-}): OpenClawPluginService {
-    let proxyHandle: ProxyHandle | null = null;
-
+export function createDashScopeProxyService() {
+    let handle: ProxyHandle | null = null;
     return {
-        id: "dashscope-thinking-proxy",
-
-        async start(ctx) {
-            const cfg = isRecord(params.pluginConfig) ? params.pluginConfig : {};
-
-            const enabled = asBoolean(cfg.enabled) ?? true;
-            if (!enabled) {
-                ctx.logger.debug?.("[dashscope-proxy] service disabled");
-                return;
-            }
-
-            const bind = asString(cfg.bind) ?? "127.0.0.1";
-            const port = asNumber(cfg.port) ?? 18788;
-            const targetBaseUrl = asString(cfg.targetBaseUrl) ?? DEFAULT_TARGET_BASE_URL;
-            const thinkingEnabled = asBoolean(cfg.thinkingEnabled) ?? true;
-            const thinkingBudget = asNumber(cfg.thinkingBudget) ?? 0;
-            const thinkingModels = asString(cfg.thinkingModels);
-            const logRequestBody = asBoolean(cfg.logRequestBody) ?? false;
-
-            const logger: ProxyLogger = adaptLogger(ctx.logger);
-
-            try {
-                const proxyConfig: DashScopeProxyConfig = {
-                    enabled: true,
-                    port,
-                    bind,
-                    targetBaseUrl,
-                    thinkingEnabled,
-                    thinkingBudget,
-                    thinkingModels,
-                    logRequestBody,
-                };
-
-                proxyHandle = await createDashScopeProxy(proxyConfig, logger);
-                ctx.logger.info?.(
-                    `[dashscope-proxy] started on ${bind}:${port} (targetBaseUrl=${targetBaseUrl})`
-                );
-            } catch (err) {
-                ctx.logger.error?.(
-                    `[dashscope-proxy] failed to start: ${(err as Error)?.message}`
-                );
-            }
+        id: "dashscope-proxy",
+        async start(ctx: { config: OpenClawConfig; logger: ProxyLogger }) {
+            const proxyConfig = resolveProxyConfig(ctx.config);
+            handle = await createDashScopeProxy(proxyConfig, ctx.logger);
         },
-
-        async stop() {
-            if (proxyHandle) {
-                await proxyHandle.stop();
-                proxyHandle = null;
-            }
+        async stop(ctx: { logger: ProxyLogger }) {
+            if (!handle) return;
+            await handle.stop();
+            handle = null;
+            ctx.logger.info?.({ ok: true }, "DashScope proxy stopped");
         },
     };
 }

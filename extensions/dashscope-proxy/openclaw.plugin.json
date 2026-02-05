@@ -1,15 +1,11 @@
 {
     "id": "clawdbot-dashscope-proxy",
-    "name": "DashScope Proxy",
-    "description": "DashScope thinking proxy plugin for OpenClaw",
+    "name": "DashScope",
+    "description": "DashScope provider plugin for OpenClaw (local thinking proxy)",
     "configSchema": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "enabled": {
-                "type": "boolean",
-                "default": true
-            },
             "bind": {
                 "type": "string",
                 "default": "127.0.0.1"
@@ -40,45 +36,6 @@
                 "type": "boolean",
                 "default": false
             }
-        }
-    },
-    "uiHints": {
-        "enabled": {
-            "label": "启用",
-            "help": "是否启用 DashScope thinking 代理服务"
-        },
-        "bind": {
-            "label": "绑定地址",
-            "help": "代理服务绑定地址（默认 127.0.0.1）",
-            "advanced": true
-        },
-        "port": {
-            "label": "端口",
-            "help": "代理服务监听端口（默认 18788）"
-        },
-        "targetBaseUrl": {
-            "label": "目标 Base URL",
-            "help": "DashScope OpenAI 兼容接口 Base URL（例如 https://dashscope.aliyuncs.com/compatible-mode/v1）"
-        },
-        "thinkingEnabled": {
-            "label": "注入 Thinking",
-            "help": "是否对支持的模型注入 enable_thinking",
-            "advanced": true
-        },
-        "thinkingBudget": {
-            "label": "思考预算",
-            "help": "思考模式 token 预算（0 表示无限制）",
-            "advanced": true
-        },
-        "thinkingModels": {
-            "label": "支持模型",
-            "help": "支持思考模式的模型列表（逗号分隔，留空使用默认）",
-            "advanced": true
-        },
-        "logRequestBody": {
-            "label": "打印请求体",
-            "help": "debug 日志输出请求体（截断）",
-            "advanced": true
         }
     }
 }

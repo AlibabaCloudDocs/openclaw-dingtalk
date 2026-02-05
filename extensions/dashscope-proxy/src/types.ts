@@ -1,48 +1,22 @@
-/**
- * DashScope Proxy 类型定义
- */
+export type ThinkLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
-import type { Server } from "node:http";
-
-/**
- * DashScope 代理配置
- */
-export interface DashScopeProxyConfig {
-    /** 是否启用代理 */
-    enabled: boolean;
-    /** 监听端口 */
-    port: number;
-    /** 绑定地址 */
+export type DashScopeProxyConfig = {
     bind: string;
-    /** DashScope API 目标 Base URL（不含 /chat/completions） */
+    port: number;
     targetBaseUrl: string;
-    /** 是否启用思考模式注入 */
     thinkingEnabled: boolean;
-    /** 思考预算 (0=无限制) */
     thinkingBudget: number;
-    /** 支持思考的模型列表 (逗号分隔) */
     thinkingModels?: string;
-    /** 是否输出请求体到 debug 日志（截断） */
-    logRequestBody?: boolean;
-}
+    logRequestBody: boolean;
+};
 
-/**
- * 代理日志接口
- * 适配 OpenClaw 的 PluginLogger 接口
- */
-export interface ProxyLogger {
-    info: (obj: unknown, msg?: string) => void;
-    debug: (obj: unknown, msg?: string) => void;
-    warn: (obj: unknown, msg?: string) => void;
-    error: (obj: unknown, msg?: string) => void;
-}
+export type ProxyLogger = {
+    debug?: (payload: Record<string, unknown>, message?: string) => void;
+    info?: (payload: Record<string, unknown>, message?: string) => void;
+    warn?: (payload: Record<string, unknown>, message?: string) => void;
+    error?: (payload: Record<string, unknown>, message?: string) => void;
+};
 
-/**
- * 代理服务句柄
- */
-export interface ProxyHandle {
-    /** HTTP 服务器实例 */
-    server: Server;
-    /** 停止代理服务 */
+export type ProxyHandle = {
     stop: () => Promise<void>;
-}
+};

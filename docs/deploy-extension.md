@@ -50,18 +50,25 @@ clawdbot gateway
         "apiKey": "sk-xxx",
         "api": "openai-completions",
         "models": [
-          { "id": "qwen3-coder-plus", "contextWindow": 1000000, "maxTokens": 65536 }
+          { "id": "qwen3-max-2026-01-23", "name": "Qwen3 Max Thinking", "contextWindow": 262144, "maxTokens": 32768, "reasoning": true, "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false } },
+          { "id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus", "contextWindow": 1000000, "maxTokens": 65536 }
         ]
       }
     }
   },
   "agents": {
     "defaults": {
-      "model": { "primary": "dashscope/qwen3-coder-plus" }
+      "model": { "primary": "dashscope/qwen3-coder-plus" },
+      "models": {
+        "dashscope/qwen3-max-2026-01-23": {},
+        "dashscope/qwen3-coder-plus": {}
+      }
     }
   }
 }
 ```
+
+提示：DashScope 思考模式使用 OpenClaw 原生 `/think` 指令开启，无需代理。
 
 ## 生产环境部署
 

@@ -858,6 +858,15 @@ Examples:
 EOF
 }
 
+require_arg() {
+    local flag="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        echo -e "${ERROR}Error: ${flag} requires a value${NC}" >&2
+        exit 2
+    fi
+}
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -941,10 +950,12 @@ parse_args() {
                 shift
                 ;;
             --install-method|--method)
+                require_arg "$1" "${2:-}"
                 INSTALL_METHOD="$2"
                 shift 2
                 ;;
             --version)
+                require_arg "$1" "${2:-}"
                 CLAWDBOT_VERSION="$2"
                 shift 2
                 ;;
@@ -961,6 +972,7 @@ parse_args() {
                 shift
                 ;;
             --git-dir|--dir)
+                require_arg "$1" "${2:-}"
                 GIT_DIR="$2"
                 shift 2
                 ;;
@@ -982,14 +994,17 @@ parse_args() {
                 ;;
             --log-file)
                 LOG_ENABLED=1
+                require_arg "$1" "${2:-}"
                 LOG_FILE="$2"
                 shift 2
                 ;;
             --log-level)
+                require_arg "$1" "${2:-}"
                 LOG_LEVEL="$2"
                 shift 2
                 ;;
             --log-history)
+                require_arg "$1" "${2:-}"
                 LOG_HISTORY="$2"
                 shift 2
                 ;;
@@ -1012,16 +1027,19 @@ parse_args() {
             # Channel management options
             --channel-add)
                 CHANNEL_ACTION="add"
+                require_arg "$1" "${2:-}"
                 CHANNEL_TARGET="$2"
                 shift 2
                 ;;
             --channel-remove)
                 CHANNEL_ACTION="remove"
+                require_arg "$1" "${2:-}"
                 CHANNEL_TARGET="$2"
                 shift 2
                 ;;
             --channel-configure)
                 CHANNEL_ACTION="configure"
+                require_arg "$1" "${2:-}"
                 CHANNEL_TARGET="$2"
                 shift 2
                 ;;
@@ -1657,22 +1675,45 @@ install_file_tools() {
             else
                 install_result=1
             fi
-        elif command -v dnf &>/dev/null; then
-            if maybe_sudo dnf install -y poppler-utils pandoc catdoc google-noto-cjk-fonts liberation-fonts >/dev/null 2>&1; then
-                install_result=0
-            else
-                install_result=1
+        elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then
+            # RHEL/CentOS/Fedora: package names differ across versions/repos.
+            # Split installs so a missing font package doesn't prevent the other tools from installing.
+            local pm="yum"
+            if command -v dnf &>/dev/null; then
+                pm="dnf"
             fi
-        elif command -v yum &>/dev/null; then
-            if maybe_sudo yum install -y poppler-utils pandoc catdoc google-noto-cjk-fonts liberation-fonts >/dev/null 2>&1; then
-                install_result=0
-            else
+
+            maybe_sudo "$pm" install -y poppler-utils pandoc catdoc >/dev/null 2>&1 || install_result=1
+            maybe_sudo "$pm" install -y liberation-fonts >/dev/null 2>&1 || install_result=1
+
+            # Noto CJK fonts (CentOS/RHEL commonly provide ttc packages)
+            local noto_ok=0
+            local -a noto_candidates=(
+                google-noto-sans-cjk-ttc-fonts
+                google-noto-serif-cjk-ttc-fonts
+                google-noto-sans-cjk-fonts
+                google-noto-cjk-fonts
+            )
+            local pkg=""
+            for pkg in "${noto_candidates[@]}"; do
+                if maybe_sudo "$pm" install -y "$pkg" >/dev/null 2>&1; then
+                    noto_ok=1
+                    break
+                fi
+            done
+            if [[ "$noto_ok" -eq 0 ]]; then
+                # Keep going (tools may still be useful), but mark partial failure.
                 install_result=1
             fi
         else
             spinner_stop 1 "Could not detect package manager for file tools"
-            echo -e "${INFO}i${NC} Please install poppler-utils, pandoc, catdoc, fonts-noto-cjk, fonts-liberation manually."
+            echo -e "${INFO}i${NC} Please install poppler-utils, pandoc, catdoc, and CJK fonts (fonts-noto-cjk or google-noto-sans-cjk-ttc-fonts) plus Liberation fonts (fonts-liberation or liberation-fonts) manually."
             return 1
+        fi
+
+        # Refresh font cache if available (best-effort)
+        if command -v fc-cache &>/dev/null; then
+            maybe_sudo fc-cache -f >/dev/null 2>&1 || true
         fi
     fi
 
@@ -1712,7 +1753,7 @@ check_python() {
     local major="${version%%.*}"
     local minor="${version#*.}"
 
-    if [[ "$major" -ge 3 && "$minor" -ge 12 ]]; then
+    if [[ "$major" -gt 3 || ( "$major" -eq 3 && "$minor" -ge 12 ) ]]; then
         echo -e "${SUCCESS}✓${NC} Python ${version} already installed ($python_cmd)"
         return 0
     else
@@ -2288,6 +2329,29 @@ try {
 ' >/dev/null 2>&1
 }
 
+restart_gateway_if_running() {
+    local claw="${1:-}"
+    if [[ -z "$claw" ]]; then
+        claw="$(resolve_clawdbot_bin || true)"
+    fi
+    if [[ -z "$claw" ]]; then
+        return 0
+    fi
+
+    if ! is_gateway_daemon_loaded "$claw"; then
+        return 0
+    fi
+
+    spinner_start "重启 Gateway..."
+    if "$claw" gateway restart >/dev/null 2>&1; then
+        spinner_stop 0 "Gateway 已重启"
+        return 0
+    fi
+    spinner_stop 1 "Gateway 重启失败"
+    echo -e "${WARN}→${NC} 请手动重启 Gateway: ${INFO}openclaw gateway restart${NC}"
+    return 0
+}
+
 # ============================================
 # Interactive Configuration Wizard
 # ============================================
@@ -2356,7 +2420,8 @@ configure_channel_dingtalk() {
     fi
 
     printf "${ACCENT}◆${NC} 钉钉 Client Secret: " > /dev/tty
-    read -r dingtalk_client_secret < /dev/tty || true
+    read -rs dingtalk_client_secret < /dev/tty || true
+    printf "\n" > /dev/tty
     if [[ -z "$dingtalk_client_secret" ]]; then
         echo -e "${ERROR}◆${NC} Client Secret 不能为空"
         return 1
@@ -2426,6 +2491,7 @@ install_channel_plugin() {
     ensure_openclaw_plugin_load_path_from_npm_global "$pkg" || true
 
     spinner_stop 0 "${display_name} 插件已安装"
+    restart_gateway_if_running "$claw"
     return 0
 }
 
@@ -2627,7 +2693,8 @@ configure_clawdbot_interactive() {
 
     local dashscope_api_key=""
     printf "${ACCENT}◆${NC} 百炼 API Key: " > /dev/tty
-    read -r dashscope_api_key < /dev/tty || true
+    read -rs dashscope_api_key < /dev/tty || true
+    printf "\n" > /dev/tty
     if [[ -z "$dashscope_api_key" ]]; then
         echo -e "${ERROR}◆${NC} API Key 不能为空"
         return 1
@@ -3101,9 +3168,7 @@ EOF
         if [[ -z "$claw" ]]; then
             claw="$(resolve_clawdbot_bin || true)"
         fi
-        if [[ -n "$claw" ]] && is_gateway_daemon_loaded "$claw"; then
-            echo -e "${INFO}i${NC} Gateway service detected; restart with: ${INFO}openclaw gateway restart${NC}"
-        fi
+        restart_gateway_if_running "$claw"
     fi
 
     log info "=== Installation completed successfully ==="
@@ -3773,20 +3838,8 @@ prompt_gateway_restart() {
         return 0
     fi
 
-    if ! is_gateway_daemon_loaded "$claw"; then
-        return 0
-    fi
-
     echo ""
-    if is_promptable && [[ "$NO_PROMPT" != "1" ]]; then
-        if clack_confirm "检测到 Gateway 正在运行，是否重启？" "true"; then
-            spinner_start "重启 Gateway..."
-            "$claw" gateway restart >/dev/null 2>&1 || true
-            spinner_stop 0 "Gateway 已重启"
-        fi
-    else
-        echo -e "${INFO}i${NC} 请手动重启 Gateway: ${INFO}openclaw gateway restart${NC}"
-    fi
+    restart_gateway_if_running "$claw"
 }
 
 run_upgrade_flow() {
@@ -3821,7 +3874,9 @@ run_upgrade_flow() {
             ;;
     esac
 
-    prompt_gateway_restart
+    if [[ "$UPGRADE_TARGET" != "plugins" ]]; then
+        prompt_gateway_restart
+    fi
 
     log info "=== Upgrade completed ==="
     echo ""
@@ -3996,7 +4051,7 @@ config_set() {
     
     mkdir -p "$CONFIG_DIR"
     
-    node -e "
+    CONFIG_VALUE="$value" node -e "
         const fs = require('fs');
         let cfg = {};
         try { 
@@ -4013,11 +4068,12 @@ config_set() {
         }
         
         // Try to parse as JSON, otherwise use as string
+        const rawValue = process.env.CONFIG_VALUE ?? '';
         let parsedValue;
         try {
-            parsedValue = JSON.parse(\`$value\`);
+            parsedValue = JSON.parse(rawValue);
         } catch {
-            parsedValue = \`$value\`;
+            parsedValue = rawValue;
         }
         obj[keys[keys.length - 1]] = parsedValue;
         
@@ -4579,9 +4635,7 @@ show_channels_menu() {
                 upgrade_choice=$(clack_select "选择要升级的插件" "${upgrade_options[@]}")
                 case $upgrade_choice in
                     0)
-                        if upgrade_dingtalk_plugin; then
-                            echo -e "${INFO}i${NC} 插件升级后如 Gateway 正在运行，请手动重启使其生效: ${INFO}openclaw gateway restart${NC}"
-                        fi
+                        upgrade_dingtalk_plugin || true
                         ;;
                     1) should_pause=false ;;
                 esac
