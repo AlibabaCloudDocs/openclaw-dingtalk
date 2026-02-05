@@ -34,6 +34,7 @@ export const BASIC_ACCOUNT: ResolvedDingTalkAccount = {
   thinking: "off",
   aiCard: {
     enabled: false,
+    autoReply: true,
     callbackType: "STREAM",
     updateThrottleMs: 800,
   },

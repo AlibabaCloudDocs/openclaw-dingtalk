@@ -6,6 +6,7 @@
 import type { ResolvedDingTalkAccount } from "../accounts.js";
 import type { StreamLogger } from "../stream/types.js";
 import { createTokenManagerFromAccount, type TokenManager } from "./token-manager.js";
+import { normalizeCardData, normalizePrivateData } from "../util/ai-card.js";
 
 export interface CardInstanceResult {
   ok: boolean;
@@ -45,6 +46,23 @@ export interface AppendCardSpacesOptions {
   cardInstanceId: string;
   openSpace?: Record<string, unknown>;
   openSpaceId?: string;
+  tokenManager?: TokenManager;
+  logger?: StreamLogger;
+}
+
+export interface DeliverCardInstanceOptions {
+  account: ResolvedDingTalkAccount;
+  outTrackId: string;
+  openSpaceId: string;
+  userIdType?: number;
+  imGroupOpenDeliverModel?: {
+    robotCode: string;
+    recipients?: string[];
+  };
+  imRobotOpenDeliverModel?: {
+    robotCode: string;
+    userIds?: string[];
+  };
   tokenManager?: TokenManager;
   logger?: StreamLogger;
 }
@@ -119,10 +137,10 @@ export async function createCardInstance(
   const body: Record<string, unknown> = {
     cardTemplateId: templateId,
     outTrackId,
-    cardData,
+    cardData: normalizeCardData(cardData),
   };
 
-  if (privateData) body.privateData = privateData;
+  if (privateData) body.privateData = normalizePrivateData(privateData);
   if (callbackType) body.callbackType = callbackType;
   if (openSpaceId) body.openSpaceId = openSpaceId;
   if (openSpace && typeof openSpace === "object") {
@@ -210,8 +228,8 @@ export async function updateCardInstance(
     outTrackId,
   };
 
-  if (cardData) body.cardData = cardData;
-  if (privateData) body.privateData = privateData;
+  if (cardData) body.cardData = normalizeCardData(cardData);
+  if (privateData) body.privateData = normalizePrivateData(privateData);
   if (callbackType) body.callbackType = callbackType;
   if (openSpaceId) body.openSpaceId = openSpaceId;
   if (openSpace && typeof openSpace === "object") {
@@ -346,6 +364,91 @@ export async function appendCardSpaces(
     logger?.error?.(
       { err: { message: (err as Error)?.message } },
       "Card spaces append error"
+    );
+    return { ok: false, error: err as Error };
+  }
+}
+
+/**
+ * Deliver card instance to an open space.
+ * API: POST /v1.0/card/instances/deliver
+ */
+export async function deliverCardInstance(
+  opts: DeliverCardInstanceOptions
+): Promise<CardInstanceResult> {
+  const {
+    account,
+    outTrackId,
+    openSpaceId,
+    userIdType,
+    imGroupOpenDeliverModel,
+    imRobotOpenDeliverModel,
+    tokenManager: providedTokenManager,
+    logger,
+  } = opts;
+
+  if (!outTrackId) {
+    return { ok: false, error: new Error("Missing outTrackId") };
+  }
+  if (!openSpaceId) {
+    return { ok: false, error: new Error("Missing openSpaceId") };
+  }
+
+  const tokenManager = providedTokenManager ?? createTokenManagerFromAccount(account, logger);
+  let accessToken: string;
+  try {
+    accessToken = await getAccessToken(account, tokenManager, logger, "card deliver");
+  } catch (err) {
+    return { ok: false, error: err as Error };
+  }
+
+  const url = `${account.apiBase}/v1.0/card/instances/deliver`;
+  const body: Record<string, unknown> = {
+    outTrackId,
+    openSpaceId,
+  };
+
+  if (userIdType !== undefined) body.userIdType = userIdType;
+  if (imGroupOpenDeliverModel) body.imGroupOpenDeliverModel = imGroupOpenDeliverModel;
+  if (imRobotOpenDeliverModel) body.imRobotOpenDeliverModel = imRobotOpenDeliverModel;
+
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-acs-dingtalk-access-token": accessToken,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    const respText = await resp.text();
+    let data: any = {};
+    try {
+      data = respText ? JSON.parse(respText) : {};
+    } catch {
+      data = { raw: respText };
+    }
+
+    if (!resp.ok) {
+      logger?.error?.(
+        { status: resp.status, error: respText.slice(0, 200) },
+        "Card instance deliver failed"
+      );
+      return {
+        ok: false,
+        error: new Error(`HTTP ${resp.status}: ${respText.slice(0, 200)}`),
+        raw: data,
+      };
+    }
+
+    logger?.debug?.({ outTrackId, openSpaceId }, "Card instance delivered");
+    return { ok: true, raw: data };
+  } catch (err) {
+    logger?.error?.(
+      { err: { message: (err as Error)?.message } },
+      "Card instance deliver error"
     );
     return { ok: false, error: err as Error };
   }

@@ -18,6 +18,12 @@ export const AICardConfigSchema = z.object({
   enabled: z.boolean().default(false),
   /** Default template ID */
   templateId: z.string().optional(),
+  /** Auto-generate card replies from text */
+  autoReply: z.boolean().default(true),
+  /** Text parameter key used for auto replies */
+  textParamKey: z.string().optional(),
+  /** Default card data for auto replies */
+  defaultCardData: z.record(z.unknown()).optional(),
   /** Callback type for card instance */
   callbackType: z.enum(["STREAM", "HTTP"]).default("STREAM"),
   /** Throttle interval for streaming updates */

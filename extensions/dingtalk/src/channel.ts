@@ -25,8 +25,8 @@ import { isLocalPath, isImageUrl } from "./api/media-upload.js";
 import { getOrCreateTokenManager } from "./runtime.js";
 import type { StreamLogger } from "./stream/types.js";
 import type { DingTalkChannelData } from "./types/channel-data.js";
-import { createCardInstance, updateCardInstance } from "./api/card-instances.js";
-import { generateOutTrackId, resolveOpenSpace, resolveTemplateId } from "./util/ai-card.js";
+import { createCardInstance, updateCardInstance, deliverCardInstance } from "./api/card-instances.js";
+import { generateOutTrackId, resolveOpenSpace, resolveTemplateId, buildCardDataFromText } from "./util/ai-card.js";
 
 /**
  * Adapt clawdbot SubsystemLogger to StreamLogger interface.
@@ -116,6 +116,9 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
           properties: {
             enabled: { type: "boolean", default: false },
             templateId: { type: "string" },
+            autoReply: { type: "boolean", default: true },
+            textParamKey: { type: "string" },
+            defaultCardData: { type: "object" },
             callbackType: { type: "string", enum: ["STREAM", "HTTP"], default: "STREAM" },
             updateThrottleMs: { type: "number", default: 800 },
             fallbackReplyMode: { type: "string", enum: ["text", "markdown"] },
@@ -148,6 +151,9 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
       subscriptionsJson: { label: "订阅配置 JSON", help: "自定义订阅配置 JSON（高级用法）", advanced: true },
       "aiCard.enabled": { label: "启用 AI 卡片", help: "是否启用高级互动卡片能力", advanced: true },
       "aiCard.templateId": { label: "默认模板 ID", help: "AI 卡片默认模板 ID", advanced: true },
+      "aiCard.autoReply": { label: "自动卡片回复", help: "未显式指定 card 时自动用 AI 卡片回复", advanced: true },
+      "aiCard.textParamKey": { label: "文本变量 Key", help: "自动回复时文本映射的变量名", advanced: true },
+      "aiCard.defaultCardData": { label: "默认卡片数据", help: "自动回复时附加的默认变量", advanced: true },
       "aiCard.callbackType": { label: "回调类型", help: "卡片回调类型（默认 STREAM）", advanced: true },
       "aiCard.updateThrottleMs": { label: "更新节流 (ms)", help: "流式更新节流间隔", advanced: true },
       "aiCard.fallbackReplyMode": { label: "失败回退模式", help: "卡片发送失败时的文本模式", advanced: true },
@@ -384,8 +390,13 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
       const channelData = payload.channelData?.dingtalk as DingTalkChannelData | undefined;
 
       // Handle AI Card
-      if (channelData?.card) {
-        const card = channelData.card;
+      if (channelData?.card || (account.aiCard.enabled && account.aiCard.autoReply && account.aiCard.templateId && payload.text?.trim())) {
+        const card = channelData?.card ?? {
+          cardData: buildCardDataFromText({
+            account,
+            text: payload.text?.trim() ?? "",
+          }),
+        };
 
         const fallbackToText = async (reason: string) => {
           if (!payload.text) {
@@ -459,6 +470,21 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
         }
 
         if (result.ok) {
+          if (!card.cardInstanceId && (card.mode !== "update") && openSpaceId) {
+            await deliverCardInstance({
+              account,
+              outTrackId,
+              openSpaceId,
+              userIdType: 1,
+              imGroupOpenDeliverModel: to.startsWith("group:")
+                ? { robotCode: account.clientId }
+                : undefined,
+              imRobotOpenDeliverModel: to.startsWith("user:")
+                ? { robotCode: account.clientId }
+                : undefined,
+              tokenManager,
+            });
+          }
           return {
             channel: "dingtalk",
             ok: true,

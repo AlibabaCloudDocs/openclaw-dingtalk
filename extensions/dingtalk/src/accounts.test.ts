@@ -85,6 +85,7 @@ describe("resolveDingTalkAccount", () => {
     expect(account.isolateContextPerUserInGroup).toBe(false);
     expect(account.thinking).toBe("off");
     expect(account.aiCard.enabled).toBe(false);
+    expect(account.aiCard.autoReply).toBe(true);
     expect(account.aiCard.callbackType).toBe("STREAM");
     expect(account.aiCard.updateThrottleMs).toBe(800);
   });

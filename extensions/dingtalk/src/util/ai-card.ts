@@ -30,10 +30,10 @@ export function deriveOpenSpaceIdFromChat(chat: ChatbotMessage): string | undefi
   const sender = chat.senderId;
   if (isGroupChatType(chat.chatType)) {
     if (!conv) return undefined;
-    return `dtv1.card//IM_GROUP.${conv}`;
+    return `dtv1.card//im_group.${conv}`;
   }
   if (!sender) return undefined;
-  return `dtv1.card//IM_ROBOT.${sender}`;
+  return `dtv1.card//im_robot.${sender}`;
 }
 
 export function deriveOpenSpaceFromChat(chat: ChatbotMessage): Record<string, unknown> | undefined {
@@ -63,21 +63,13 @@ export function resolveOpenSpace(params: {
 }): ResolvedOpenSpace {
   const { account, card, chat } = params;
 
-  if (card?.openSpace || card?.openSpaceId) {
-    return { openSpace: card.openSpace, openSpaceId: card.openSpaceId };
-  }
+  const openSpace = card?.openSpace ?? account.aiCard.openSpace ?? (chat ? deriveOpenSpaceFromChat(chat) : undefined);
+  const openSpaceId =
+    card?.openSpaceId ??
+    deriveOpenSpaceIdFromOpenSpace(openSpace) ??
+    (chat ? deriveOpenSpaceIdFromChat(chat) : undefined);
 
-  if (account.aiCard.openSpace) {
-    return { openSpace: account.aiCard.openSpace };
-  }
-
-  if (chat) {
-    const openSpaceId = deriveOpenSpaceIdFromChat(chat);
-    const openSpace = deriveOpenSpaceFromChat(chat);
-    return { openSpace, openSpaceId };
-  }
-
-  return {};
+  return { openSpace, openSpaceId };
 }
 
 export function resolveTemplateId(
@@ -85,4 +77,67 @@ export function resolveTemplateId(
   card?: DingTalkAICard
 ): string | undefined {
   return card?.templateId ?? account.aiCard.templateId;
+}
+
+export function buildCardDataFromText(params: {
+  account: ResolvedDingTalkAccount;
+  text: string;
+}): Record<string, unknown> {
+  const { account, text } = params;
+  const key = account.aiCard.textParamKey || "text";
+  const defaults = account.aiCard.defaultCardData ?? {};
+  return {
+    ...defaults,
+    [key]: text,
+  };
+}
+
+export function normalizeCardData(cardData: Record<string, unknown>): Record<string, unknown> {
+  if (!cardData || typeof cardData !== "object") {
+    return { cardParamMap: {} };
+  }
+  if ("cardParamMap" in cardData) {
+    return cardData;
+  }
+  return { cardParamMap: cardData };
+}
+
+export function normalizePrivateData(
+  privateData?: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  if (!privateData || typeof privateData !== "object") return undefined;
+  if ("cardParamMap" in privateData) {
+    return privateData;
+  }
+
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(privateData)) {
+    if (value && typeof value === "object" && "cardParamMap" in (value as Record<string, unknown>)) {
+      normalized[key] = value;
+    } else {
+      normalized[key] = { cardParamMap: value };
+    }
+  }
+  return normalized;
+}
+
+export function deriveOpenSpaceIdFromOpenSpace(
+  openSpace?: Record<string, unknown>
+): string | undefined {
+  if (!openSpace || typeof openSpace !== "object") return undefined;
+  const group = (openSpace as Record<string, any>).imGroupOpenSpaceModel;
+  const robot = (openSpace as Record<string, any>).imRobotOpenSpaceModel;
+  if (group && typeof group === "object") {
+    const conv = group.openConversationId;
+    if (conv) {
+      return `dtv1.card//im_group.${conv}`;
+    }
+  }
+  if (robot && typeof robot === "object") {
+    const userId = robot.userId;
+    if (userId) {
+      return `dtv1.card//im_robot.${userId}`;
+    }
+  }
+  return undefined;
 }

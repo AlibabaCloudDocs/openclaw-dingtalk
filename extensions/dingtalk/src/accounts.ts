@@ -53,6 +53,9 @@ export type ResolvedDingTalkAccount = {
   aiCard: {
     enabled: boolean;
     templateId?: string;
+    autoReply: boolean;
+    textParamKey?: string;
+    defaultCardData?: Record<string, unknown>;
     callbackType: "STREAM" | "HTTP";
     updateThrottleMs: number;
     fallbackReplyMode?: "text" | "markdown";
@@ -199,6 +202,9 @@ export function resolveDingTalkAccount(params: {
   const aiCard = {
     enabled: accountAICard?.enabled ?? baseAICard?.enabled ?? false,
     templateId: accountAICard?.templateId ?? baseAICard?.templateId,
+    autoReply: accountAICard?.autoReply ?? baseAICard?.autoReply ?? true,
+    textParamKey: accountAICard?.textParamKey ?? baseAICard?.textParamKey,
+    defaultCardData: accountAICard?.defaultCardData ?? baseAICard?.defaultCardData,
     callbackType: accountAICard?.callbackType ?? baseAICard?.callbackType ?? "STREAM",
     updateThrottleMs: accountAICard?.updateThrottleMs ?? baseAICard?.updateThrottleMs ?? 800,
     fallbackReplyMode: accountAICard?.fallbackReplyMode ?? baseAICard?.fallbackReplyMode,

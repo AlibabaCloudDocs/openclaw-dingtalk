@@ -17,13 +17,13 @@ import { DINGTALK_CHANNEL_ID } from "./config-schema.js";
 import { downloadMedia, uploadMedia } from "./api/media.js";
 import { uploadMediaToOAPI } from "./api/media-upload.js";
 import { sendFileMessage } from "./api/send-message.js";
-import { createCardInstance, updateCardInstance } from "./api/card-instances.js";
+import { createCardInstance, updateCardInstance, deliverCardInstance } from "./api/card-instances.js";
 import { extractThinkDirective, extractThinkOnceDirective, type ThinkLevel } from "./util/think-directive.js";
 import { parseMediaProtocol, hasMediaTags, replaceMediaTags } from "./media-protocol.js";
 import { processMediaItems, uploadMediaItem } from "./send/media-sender.js";
 import { DEFAULT_DINGTALK_SYSTEM_PROMPT, buildSenderContext } from "./system-prompt.js";
 import type { DingTalkAICard } from "./types/channel-data.js";
-import { generateOutTrackId, resolveOpenSpace, resolveTemplateId } from "./util/ai-card.js";
+import { generateOutTrackId, resolveOpenSpace, resolveTemplateId, buildCardDataFromText } from "./util/ai-card.js";
 
 export interface MonitorDingTalkOpts {
   account: ResolvedDingTalkAccount;
@@ -89,7 +89,7 @@ function inferChatTypeFromOpenSpaceId(openSpaceId?: string): "group" | "direct" 
 
 function extractConversationIdFromOpenSpaceId(openSpaceId?: string): string | undefined {
   if (!openSpaceId) return undefined;
-  const match = openSpaceId.match(/IM_GROUP\.([^/]+.*)$/i);
+  const match = openSpaceId.match(/im_group\.([^/;]+.*)$/i);
   if (match && match[1]) return match[1];
   return undefined;
 }
@@ -210,8 +210,24 @@ export async function monitorDingTalkProvider(
     sessionKey: string;
   }): Promise<{ handled: boolean; ok: boolean; error?: Error }> {
     const channelData = params.payload.channelData?.dingtalk as { card?: DingTalkAICard } | undefined;
-    const card = channelData?.card;
-    if (!card) return { handled: false, ok: false };
+    let card = channelData?.card;
+    if (!card) {
+      const allowAuto =
+        account.aiCard.enabled &&
+        account.aiCard.autoReply &&
+        Boolean(account.aiCard.templateId) &&
+        Boolean(params.payload.text?.trim());
+      if (!allowAuto) {
+        return { handled: false, ok: false };
+      }
+
+      card = {
+        cardData: buildCardDataFromText({
+          account,
+          text: params.payload.text?.trim() ?? "",
+        }),
+      };
+    }
 
     if (!account.aiCard.enabled) {
       return { handled: true, ok: false, error: new Error("AI Card is disabled for this account.") };
@@ -282,6 +298,34 @@ export async function monitorDingTalkProvider(
     }
 
     if (result.ok) {
+      if (!preferUpdate && openSpaceId) {
+        const isGroup = isGroupChatType(params.chat.chatType);
+        const senderId = params.chat.senderId;
+        const deliver = await deliverCardInstance({
+          account,
+          outTrackId,
+          openSpaceId,
+          userIdType: 1,
+          imGroupOpenDeliverModel: isGroup
+            ? {
+                robotCode: account.clientId,
+                recipients: senderId ? [senderId] : undefined,
+              }
+            : undefined,
+          imRobotOpenDeliverModel: !isGroup
+            ? {
+                robotCode: account.clientId,
+                userIds: senderId ? [senderId] : undefined,
+              }
+            : undefined,
+          tokenManager,
+        });
+
+        if (!deliver.ok) {
+          return { handled: true, ok: false, error: deliver.error };
+        }
+      }
+
       const nextState = {
         cardInstanceId: result.cardInstanceId ?? cardInstanceId,
         outTrackId,

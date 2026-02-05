@@ -40,10 +40,12 @@ export {
   createCardInstance,
   updateCardInstance,
   appendCardSpaces,
+  deliverCardInstance,
   type CardInstanceResult,
   type CreateCardInstanceOptions,
   type UpdateCardInstanceOptions,
   type AppendCardSpacesOptions,
+  type DeliverCardInstanceOptions,
 } from "./card-instances.js";
 
 export {
