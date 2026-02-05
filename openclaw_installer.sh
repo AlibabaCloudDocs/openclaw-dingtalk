@@ -1675,22 +1675,45 @@ install_file_tools() {
             else
                 install_result=1
             fi
-        elif command -v dnf &>/dev/null; then
-            if maybe_sudo dnf install -y poppler-utils pandoc catdoc google-noto-cjk-fonts liberation-fonts >/dev/null 2>&1; then
-                install_result=0
-            else
-                install_result=1
+        elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then
+            # RHEL/CentOS/Fedora: package names differ across versions/repos.
+            # Split installs so a missing font package doesn't prevent the other tools from installing.
+            local pm="yum"
+            if command -v dnf &>/dev/null; then
+                pm="dnf"
             fi
-        elif command -v yum &>/dev/null; then
-            if maybe_sudo yum install -y poppler-utils pandoc catdoc google-noto-cjk-fonts liberation-fonts >/dev/null 2>&1; then
-                install_result=0
-            else
+
+            maybe_sudo "$pm" install -y poppler-utils pandoc catdoc >/dev/null 2>&1 || install_result=1
+            maybe_sudo "$pm" install -y liberation-fonts >/dev/null 2>&1 || install_result=1
+
+            # Noto CJK fonts (CentOS/RHEL commonly provide ttc packages)
+            local noto_ok=0
+            local -a noto_candidates=(
+                google-noto-sans-cjk-ttc-fonts
+                google-noto-serif-cjk-ttc-fonts
+                google-noto-sans-cjk-fonts
+                google-noto-cjk-fonts
+            )
+            local pkg=""
+            for pkg in "${noto_candidates[@]}"; do
+                if maybe_sudo "$pm" install -y "$pkg" >/dev/null 2>&1; then
+                    noto_ok=1
+                    break
+                fi
+            done
+            if [[ "$noto_ok" -eq 0 ]]; then
+                # Keep going (tools may still be useful), but mark partial failure.
                 install_result=1
             fi
         else
             spinner_stop 1 "Could not detect package manager for file tools"
-            echo -e "${INFO}i${NC} Please install poppler-utils, pandoc, catdoc, fonts-noto-cjk, fonts-liberation manually."
+            echo -e "${INFO}i${NC} Please install poppler-utils, pandoc, catdoc, and CJK fonts (fonts-noto-cjk or google-noto-sans-cjk-ttc-fonts) plus Liberation fonts (fonts-liberation or liberation-fonts) manually."
             return 1
+        fi
+
+        # Refresh font cache if available (best-effort)
+        if command -v fc-cache &>/dev/null; then
+            maybe_sudo fc-cache -f >/dev/null 2>&1 || true
         fi
     fi
 
