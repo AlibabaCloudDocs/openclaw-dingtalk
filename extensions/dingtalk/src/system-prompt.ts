@@ -19,6 +19,7 @@ export function buildDingTalkSystemPrompt(): string {
 
 1. 发送图片和文件给用户：调用 skill \`dingtalk-send-media\`
 2. 发送或者设置定时任务/提醒：调用 skill \`dingtalk-cron-job\`
+3. 进行高质量浏览器自动化操作、截图或网页交互：调用 skill \`openclaw-browser-quality\`
 
 补充约束：
 - 发送媒体必须输出 \`[DING:IMAGE ...]\` / \`[DING:FILE ...]\` 标签（细节在 skill 里）
