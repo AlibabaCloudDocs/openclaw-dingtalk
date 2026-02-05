@@ -38,11 +38,13 @@ export {
 
 export {
   createCardInstance,
+  createAndDeliverCardInstance,
   updateCardInstance,
   appendCardSpaces,
   deliverCardInstance,
   type CardInstanceResult,
   type CreateCardInstanceOptions,
+  type CreateAndDeliverCardOptions,
   type UpdateCardInstanceOptions,
   type AppendCardSpacesOptions,
   type DeliverCardInstanceOptions,

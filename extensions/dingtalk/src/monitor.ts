@@ -17,7 +17,7 @@ import { DINGTALK_CHANNEL_ID } from "./config-schema.js";
 import { downloadMedia, uploadMedia } from "./api/media.js";
 import { uploadMediaToOAPI } from "./api/media-upload.js";
 import { sendFileMessage } from "./api/send-message.js";
-import { createCardInstance, updateCardInstance, deliverCardInstance } from "./api/card-instances.js";
+import { createCardInstance, updateCardInstance, deliverCardInstance, createAndDeliverCardInstance } from "./api/card-instances.js";
 import { extractThinkDirective, extractThinkOnceDirective, type ThinkLevel } from "./util/think-directive.js";
 import { parseMediaProtocol, hasMediaTags, replaceMediaTags } from "./media-protocol.js";
 import { processMediaItems, uploadMediaItem } from "./send/media-sender.js";
@@ -321,23 +321,56 @@ export async function monitorDingTalkProvider(
         tokenManager,
       });
     } else {
-      result = await createCardInstance({
+      const isGroup = isGroupChatType(params.chat.chatType);
+      const senderId = params.chat.senderId;
+      const deliverModels = isGroup
+        ? {
+            imGroupOpenDeliverModel: {
+              robotCode: account.clientId,
+              recipients: senderId ? [senderId] : undefined,
+            },
+          }
+        : {
+            imRobotOpenDeliverModel: {
+              robotCode: account.clientId,
+              userIds: senderId ? [senderId] : undefined,
+            },
+          };
+
+      result = await createAndDeliverCardInstance({
         account,
         templateId,
         outTrackId,
         cardData: card.cardData,
         privateData: card.privateData,
-        openSpace,
+        openSpace: {
+          ...(openSpace ?? {}),
+          ...deliverModels,
+        },
         openSpaceId,
         callbackType,
+        userId: senderId,
         tokenManager,
       });
-    }
 
-    if (result.ok) {
-      if (!preferUpdate && openSpaceId) {
-        const isGroup = isGroupChatType(params.chat.chatType);
-        const senderId = params.chat.senderId;
+      if (!result.ok && openSpaceId) {
+        // Fallback to create + deliver if createAndDeliver fails
+        const created = await createCardInstance({
+          account,
+          templateId,
+          outTrackId,
+          cardData: card.cardData,
+          privateData: card.privateData,
+          openSpace,
+          openSpaceId,
+          callbackType,
+          tokenManager,
+        });
+
+        if (!created.ok) {
+          return { handled: true, ok: false, error: created.error };
+        }
+
         const deliver = await deliverCardInstance({
           account,
           outTrackId,
@@ -361,8 +394,12 @@ export async function monitorDingTalkProvider(
         if (!deliver.ok) {
           return { handled: true, ok: false, error: deliver.error };
         }
-      }
 
+        result = created;
+      }
+    }
+
+    if (result.ok) {
       const nextState = {
         cardInstanceId: result.cardInstanceId ?? cardInstanceId,
         outTrackId,

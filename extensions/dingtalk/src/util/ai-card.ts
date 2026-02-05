@@ -30,10 +30,10 @@ export function deriveOpenSpaceIdFromChat(chat: ChatbotMessage): string | undefi
   const sender = chat.senderId;
   if (isGroupChatType(chat.chatType)) {
     if (!conv) return undefined;
-    return `dtv1.card//im_group.${conv}`;
+    return `dtv1.card//IM_GROUP.${conv}`;
   }
   if (!sender) return undefined;
-  return `dtv1.card//im_robot.${sender}`;
+  return `dtv1.card//IM_ROBOT.${sender}`;
 }
 
 export function deriveOpenSpaceFromChat(chat: ChatbotMessage): Record<string, unknown> | undefined {
@@ -130,13 +130,13 @@ export function deriveOpenSpaceIdFromOpenSpace(
   if (group && typeof group === "object") {
     const conv = group.openConversationId;
     if (conv) {
-      return `dtv1.card//im_group.${conv}`;
+      return `dtv1.card//IM_GROUP.${conv}`;
     }
   }
   if (robot && typeof robot === "object") {
     const userId = robot.userId;
     if (userId) {
-      return `dtv1.card//im_robot.${userId}`;
+      return `dtv1.card//IM_ROBOT.${userId}`;
     }
   }
   return undefined;
