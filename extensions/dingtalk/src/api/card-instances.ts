@@ -77,6 +77,8 @@ export interface CreateAndDeliverCardOptions {
   openSpaceId?: string;
   callbackType?: "STREAM" | "HTTP";
   userId?: string;
+  userIdType?: number;
+  robotCode?: string;
   tokenManager?: TokenManager;
   logger?: StreamLogger;
 }
@@ -172,10 +174,10 @@ export async function createCardInstance(
 
   if (privateData) body.privateData = normalizePrivateData(privateData);
   if (callbackType) body.callbackType = callbackType;
-  if (openSpaceId) body.openSpaceId = openSpaceId;
   if (openSpace && typeof openSpace === "object") {
     Object.assign(body, openSpace);
   }
+  if (openSpaceId) body.openSpaceId = openSpaceId;
 
   try {
     const resp = await fetch(url, {
@@ -524,6 +526,8 @@ export async function createAndDeliverCardInstance(
     openSpaceId,
     callbackType,
     userId,
+    userIdType,
+    robotCode,
     tokenManager: providedTokenManager,
     logger,
   } = opts;
@@ -560,6 +564,8 @@ export async function createAndDeliverCardInstance(
     Object.assign(body, openSpace);
   }
   if (userId) body.userId = userId;
+  if (userIdType !== undefined) body.userIdType = userIdType;
+  if (robotCode) body.robotCode = robotCode;
 
   try {
     const resp = await fetch(url, {

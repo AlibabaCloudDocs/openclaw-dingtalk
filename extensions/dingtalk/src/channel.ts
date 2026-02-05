@@ -20,12 +20,12 @@ import { DEFAULT_ACCOUNT_ID, DINGTALK_CHANNEL_ID, DINGTALK_NPM_PACKAGE } from ".
 import { chunkMarkdownText } from "./send/chunker.js";
 import { monitorDingTalkProvider } from "./monitor.js";
 import { probeDingTalk } from "./probe.js";
-import { sendProactiveMessage, sendImageMessage, sendActionCardMessage, sendMediaByPath } from "./api/send-message.js";
+import { sendProactiveMessage, sendImageMessage, sendActionCardMessage, sendMediaByPath, parseTarget } from "./api/send-message.js";
 import { isLocalPath, isImageUrl } from "./api/media-upload.js";
 import { getOrCreateTokenManager } from "./runtime.js";
 import type { StreamLogger } from "./stream/types.js";
 import type { DingTalkChannelData } from "./types/channel-data.js";
-import { createCardInstance, updateCardInstance, deliverCardInstance } from "./api/card-instances.js";
+import { createCardInstance, updateCardInstance, deliverCardInstance, createAndDeliverCardInstance } from "./api/card-instances.js";
 import { generateOutTrackId, resolveOpenSpace, resolveTemplateId, buildCardDataFromText } from "./util/ai-card.js";
 
 /**
@@ -434,7 +434,15 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
           return fallbackToText("Missing AI card templateId.");
         }
 
-        const { openSpace, openSpaceId } = resolveOpenSpace({ account, card });
+        let { openSpace, openSpaceId } = resolveOpenSpace({ account, card });
+        const target = parseTarget(to);
+        if (!openSpaceId && target.type === "group") {
+          openSpaceId = `dtv1.card//im_group.${target.id}`;
+        }
+        if (!openSpaceId && target.type === "user") {
+          openSpaceId = `dtv1.card//im_robot.${target.id}`;
+        }
+
         if (!openSpace && !openSpaceId) {
           return fallbackToText("Missing openSpace/openSpaceId for AI card delivery.");
         }
@@ -456,40 +464,66 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
             tokenManager,
           });
         } else {
-          result = await createCardInstance({
+          const baseOpenSpace = openSpace ?? {};
+          const openSpacePayload = target.type === "group"
+            ? {
+                ...baseOpenSpace,
+                imGroupOpenSpaceModel: {
+                  ...(baseOpenSpace as any).imGroupOpenSpaceModel,
+                },
+                imGroupOpenDeliverModel: {
+                  robotCode: account.clientId,
+                },
+              }
+            : {
+                ...baseOpenSpace,
+                imRobotOpenSpaceModel: {
+                  ...(baseOpenSpace as any).imRobotOpenSpaceModel,
+                },
+                imRobotOpenDeliverModel: {
+                  spaceType: "IM_ROBOT",
+                  robotCode: account.clientId,
+                },
+              };
+
+          result = await createAndDeliverCardInstance({
             account,
             templateId,
             outTrackId,
             cardData: card.cardData,
             privateData: card.privateData,
-            openSpace,
+            openSpace: openSpacePayload,
             openSpaceId,
             callbackType,
+            userId: target.type === "user" ? target.id : undefined,
+            userIdType: target.type === "user" ? 1 : undefined,
+            robotCode: account.clientId,
             tokenManager,
           });
         }
 
         if (result.ok) {
-          if (!card.cardInstanceId && (card.mode !== "update") && openSpaceId) {
-            await deliverCardInstance({
-              account,
-              outTrackId,
-              openSpaceId,
-              userIdType: 1,
-              imGroupOpenDeliverModel: to.startsWith("group:")
-                ? { robotCode: account.clientId }
-                : undefined,
-              imRobotOpenDeliverModel: to.startsWith("user:")
-                ? { robotCode: account.clientId }
-                : undefined,
-              tokenManager,
-            });
-          }
           return {
             channel: "dingtalk",
             ok: true,
             messageId: result.cardInstanceId ?? outTrackId,
           };
+        }
+
+        if (!card.cardInstanceId && (card.mode !== "update") && openSpaceId) {
+          await deliverCardInstance({
+            account,
+            outTrackId,
+            openSpaceId,
+            userIdType: 1,
+            imGroupOpenDeliverModel: target.type === "group"
+              ? { robotCode: account.clientId }
+              : undefined,
+            imRobotOpenDeliverModel: target.type === "user"
+              ? { robotCode: account.clientId }
+              : undefined,
+            tokenManager,
+          });
         }
 
         return fallbackToText(result.error?.message ?? "AI Card send failed");

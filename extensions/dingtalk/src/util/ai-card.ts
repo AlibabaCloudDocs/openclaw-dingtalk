@@ -30,10 +30,10 @@ export function deriveOpenSpaceIdFromChat(chat: ChatbotMessage): string | undefi
   const sender = chat.senderId;
   if (isGroupChatType(chat.chatType)) {
     if (!conv) return undefined;
-    return `dtv1.card//IM_GROUP.${conv}`;
+    return `dtv1.card//im_group.${conv}`;
   }
   if (!sender) return undefined;
-  return `dtv1.card//IM_ROBOT.${sender}`;
+  return `dtv1.card//im_robot.${sender}`;
 }
 
 export function deriveOpenSpaceFromChat(chat: ChatbotMessage): Record<string, unknown> | undefined {
@@ -63,7 +63,7 @@ export function resolveOpenSpace(params: {
 }): ResolvedOpenSpace {
   const { account, card, chat } = params;
 
-  const openSpace = card?.openSpace ?? account.aiCard.openSpace ?? (chat ? deriveOpenSpaceFromChat(chat) : undefined);
+  const openSpace = card?.openSpace ?? account.aiCard.openSpace;
   const openSpaceId =
     card?.openSpaceId ??
     deriveOpenSpaceIdFromOpenSpace(openSpace) ??
@@ -92,14 +92,31 @@ export function buildCardDataFromText(params: {
   };
 }
 
+export function convertJSONValuesToString(obj: Record<string, unknown>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof value === "string") {
+      result[key] = value;
+    } else {
+      try {
+        result[key] = JSON.stringify(value);
+      } catch {
+        result[key] = "";
+      }
+    }
+  }
+  return result;
+}
+
 export function normalizeCardData(cardData: Record<string, unknown>): Record<string, unknown> {
   if (!cardData || typeof cardData !== "object") {
     return { cardParamMap: {} };
   }
   if ("cardParamMap" in cardData) {
-    return cardData;
+    const map = (cardData as Record<string, unknown>).cardParamMap as Record<string, unknown>;
+    return { ...cardData, cardParamMap: convertJSONValuesToString(map ?? {}) };
   }
-  return { cardParamMap: cardData };
+  return { cardParamMap: convertJSONValuesToString(cardData) };
 }
 
 export function normalizePrivateData(
@@ -107,15 +124,21 @@ export function normalizePrivateData(
 ): Record<string, unknown> | undefined {
   if (!privateData || typeof privateData !== "object") return undefined;
   if ("cardParamMap" in privateData) {
-    return privateData;
+    const map = (privateData as Record<string, unknown>).cardParamMap as Record<string, unknown>;
+    return { ...privateData, cardParamMap: convertJSONValuesToString(map ?? {}) };
   }
 
   const normalized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(privateData)) {
     if (value && typeof value === "object" && "cardParamMap" in (value as Record<string, unknown>)) {
-      normalized[key] = value;
+      const raw = value as Record<string, unknown>;
+      normalized[key] = {
+        ...raw,
+        cardParamMap: convertJSONValuesToString((raw.cardParamMap as Record<string, unknown>) ?? {}),
+      };
     } else {
-      normalized[key] = { cardParamMap: value };
+      const map = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : { value };
+      normalized[key] = { cardParamMap: convertJSONValuesToString(map) };
     }
   }
   return normalized;
@@ -130,13 +153,13 @@ export function deriveOpenSpaceIdFromOpenSpace(
   if (group && typeof group === "object") {
     const conv = group.openConversationId;
     if (conv) {
-      return `dtv1.card//IM_GROUP.${conv}`;
+      return `dtv1.card//im_group.${conv}`;
     }
   }
   if (robot && typeof robot === "object") {
     const userId = robot.userId;
     if (userId) {
-      return `dtv1.card//IM_ROBOT.${userId}`;
+      return `dtv1.card//im_robot.${userId}`;
     }
   }
   return undefined;

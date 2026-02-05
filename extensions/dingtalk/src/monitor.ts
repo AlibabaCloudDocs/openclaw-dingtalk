@@ -323,17 +323,27 @@ export async function monitorDingTalkProvider(
     } else {
       const isGroup = isGroupChatType(params.chat.chatType);
       const senderId = params.chat.senderId;
-      const deliverModels = isGroup
+      const baseOpenSpace = openSpace ?? {};
+
+      const openSpacePayload = isGroup
         ? {
+            ...baseOpenSpace,
+            imGroupOpenSpaceModel: {
+              ...(baseOpenSpace as any).imGroupOpenSpaceModel,
+            },
             imGroupOpenDeliverModel: {
               robotCode: account.clientId,
               recipients: senderId ? [senderId] : undefined,
             },
           }
         : {
+            ...baseOpenSpace,
+            imRobotOpenSpaceModel: {
+              ...(baseOpenSpace as any).imRobotOpenSpaceModel,
+            },
             imRobotOpenDeliverModel: {
+              spaceType: "IM_ROBOT",
               robotCode: account.clientId,
-              userIds: senderId ? [senderId] : undefined,
             },
           };
 
@@ -343,13 +353,12 @@ export async function monitorDingTalkProvider(
         outTrackId,
         cardData: card.cardData,
         privateData: card.privateData,
-        openSpace: {
-          ...(openSpace ?? {}),
-          ...deliverModels,
-        },
+        openSpace: openSpacePayload,
         openSpaceId,
         callbackType,
         userId: senderId,
+        userIdType: 1,
+        robotCode: account.clientId,
         tokenManager,
       });
 
@@ -378,15 +387,15 @@ export async function monitorDingTalkProvider(
           userIdType: 1,
           imGroupOpenDeliverModel: isGroup
             ? {
-                robotCode: account.clientId,
-                recipients: senderId ? [senderId] : undefined,
-              }
+              robotCode: account.clientId,
+              recipients: senderId ? [senderId] : undefined,
+            }
             : undefined,
           imRobotOpenDeliverModel: !isGroup
             ? {
-                robotCode: account.clientId,
-                userIds: senderId ? [senderId] : undefined,
-              }
+              robotCode: account.clientId,
+              userIds: senderId ? [senderId] : undefined,
+            }
             : undefined,
           tokenManager,
         });
