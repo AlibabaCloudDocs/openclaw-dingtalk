@@ -6,7 +6,7 @@ metadata: {"openclaw": {"always": true}}
 
 # 钉钉定时提醒
 
-当用户提到任何与**时间点提醒**相关的内容时，必须使用 `clawdbot cron add` 创建定时任务。
+当用户提到任何与**时间点提醒**相关的内容时，必须使用exec直接调用 `openclaw cron add` 创建定时任务。不要用OpenClaw 内置的 cron 工具。
 
 ## 触发场景
 
@@ -20,7 +20,7 @@ metadata: {"openclaw": {"always": true}}
 ## 命令模板
 
 ```bash
-clawdbot cron add \
+openclaw cron add \
   --name "<根据对话生成的任务名>" \
   --at "<时间>" \
   --session isolated \
@@ -53,7 +53,7 @@ clawdbot cron add \
 示例：
 
 ```bash
-clawdbot cron add \
+openclaw cron add \
   --name "群打卡提醒" \
   --cron "0 17 * * *" \
   --tz "Asia/Shanghai" \
@@ -97,7 +97,7 @@ Agent 会误解为让它自己"起来活动"。
 用户说："下午3点提醒我开会"
 
 ```bash
-clawdbot cron add \
+openclaw cron add \
   --name "开会提醒" \
   --at "2026-02-02T15:00:00+08:00" \
   --session isolated \
@@ -113,14 +113,14 @@ clawdbot cron add \
 用户说："20分钟后提醒我喝水"
 
 ```bash
-clawdbot cron add \
+openclaw cron add \
   --name "喝水提醒" \
   --at "20m" \
   --session isolated \
   --message "提醒用户：该喝水了！保持水分很重要。" \
   --deliver \
   --channel "clawdbot-dingtalk" \
-  --to "02482523065424091871" \
+  --to "manager9140" \
   --delete-after-run
 ```
 
@@ -129,7 +129,7 @@ clawdbot cron add \
 用户说："每2小时提醒我休息一下"
 
 ```bash
-clawdbot cron add \
+openclaw cron add \
   --name "定时休息提醒" \
   --cron "0 */2 * * *" \
   --tz "Asia/Shanghai" \
@@ -137,7 +137,7 @@ clawdbot cron add \
   --message "提醒用户：已经过去2小时了，该休息一下眼睛和身体。" \
   --deliver \
   --channel "clawdbot-dingtalk" \
-  --to "02482523065424091871"
+  --to "manager9140"
 ```
 
 ### 每日固定时间提醒
@@ -145,7 +145,7 @@ clawdbot cron add \
 用户说："每天早上9点提醒我看日报"
 
 ```bash
-clawdbot cron add \
+openclaw cron add \
   --name "日报提醒" \
   --cron "0 9 * * *" \
   --tz "Asia/Shanghai" \
@@ -153,7 +153,7 @@ clawdbot cron add \
   --message "提醒用户：早上好！该查看今日日报了。" \
   --deliver \
   --channel "clawdbot-dingtalk" \
-  --to "02482523065424091871"
+  --to "manager9140"
 ```
 
 ## 常见错误检查清单
@@ -172,11 +172,11 @@ clawdbot cron add \
 
 ```bash
 # 查看所有任务
-clawdbot cron list
+openclaw cron list
 
 # 立即测试任务
-clawdbot cron run <job-id>
+openclaw cron run <job-id>
 
 # 删除任务
-clawdbot cron rm <job-id>
+openclaw cron rm <job-id>
 ```

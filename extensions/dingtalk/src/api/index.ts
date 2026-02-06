@@ -37,6 +37,20 @@ export {
 } from "./media.js";
 
 export {
+  createCardInstance,
+  createAndDeliverCardInstance,
+  updateCardInstance,
+  appendCardSpaces,
+  deliverCardInstance,
+  type CardInstanceResult,
+  type CreateCardInstanceOptions,
+  type CreateAndDeliverCardOptions,
+  type UpdateCardInstanceOptions,
+  type AppendCardSpacesOptions,
+  type DeliverCardInstanceOptions,
+} from "./card-instances.js";
+
+export {
   uploadMediaToOAPI,
   uploadLocalFile,
   isLocalPath,

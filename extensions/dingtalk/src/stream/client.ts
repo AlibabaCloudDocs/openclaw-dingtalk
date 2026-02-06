@@ -12,11 +12,45 @@ import {
 } from "dingtalk-stream";
 import type {
   ChatbotMessage,
+  CardCallbackMessage,
   StreamClientHandle,
   StreamClientOptions,
   StreamLogger,
 } from "./types.js";
 import { extractChatbotMessage } from "./message-parser.js";
+import { extractCardCallback } from "./card-callback.js";
+
+const TOPIC_CARD_INSTANCE_CALLBACK = "/v1.0/card/instances/callback";
+
+function truncateText(value: string, maxLen: number = 500): string {
+  if (value.length <= maxLen) return value;
+  return `${value.slice(0, maxLen)}...(truncated)`;
+}
+
+function serializeUnknown(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return truncateText(value);
+  try {
+    return truncateText(JSON.stringify(value));
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function getConnectionErrorDetails(err: unknown): Record<string, unknown> {
+  const anyErr = err as Record<string, any>;
+  const response = anyErr?.response as Record<string, any> | undefined;
+  const config = anyErr?.config as Record<string, any> | undefined;
+
+  return {
+    message: anyErr?.message,
+    code: anyErr?.code,
+    status: response?.status,
+    statusText: response?.statusText,
+    url: config?.url,
+    responseBody: serializeUnknown(response?.data),
+  };
+}
 
 /**
  * Start DingTalk Stream client using the official SDK.
@@ -25,7 +59,7 @@ import { extractChatbotMessage } from "./message-parser.js";
 export async function startDingTalkStreamClient(
   options: StreamClientOptions
 ): Promise<StreamClientHandle> {
-  const { clientId, clientSecret, logger, onChatMessage } = options;
+  const { clientId, clientSecret, logger, onChatMessage, onCardCallback } = options;
 
   logger?.info?.({ clientId: clientId?.slice(0, 8) + "..." }, "Initializing DingTalk Stream SDK client");
 
@@ -108,6 +142,51 @@ export async function startDingTalkStreamClient(
     }
   });
 
+  // Register AI Card callback
+  client.registerCallbackListener(TOPIC_CARD_INSTANCE_CALLBACK, async (res: DWClientDownStream) => {
+    logger?.debug?.(
+      { topic: res.headers.topic, messageId: res.headers.messageId },
+      "Received AI Card callback"
+    );
+
+    try {
+      client.socketCallBackResponse(res.headers.messageId, { status: "received" });
+    } catch (err) {
+      logger?.error?.({ err: { message: (err as Error)?.message } }, "Failed to send card callback ACK");
+    }
+
+    let parsedData: unknown;
+    try {
+      parsedData = JSON.parse(res.data);
+    } catch {
+      parsedData = res.data;
+    }
+
+    const rawMessage = {
+      type: res.type,
+      headers: res.headers,
+      data: parsedData,
+    };
+
+    const callback = extractCardCallback(rawMessage);
+    if (!callback) {
+      logger?.debug?.(
+        { eventType: res.headers.eventType, topic: res.headers.topic },
+        "Stream event ignored (not card callback)"
+      );
+      return;
+    }
+
+    if (!onCardCallback) {
+      logger?.debug?.({ messageId: callback.messageId }, "No card callback handler registered");
+      return;
+    }
+
+    onCardCallback(callback as CardCallbackMessage).catch((err) => {
+      logger?.error?.({ err: { message: (err as Error)?.message } }, "onCardCallback handler error");
+    });
+  });
+
   // Register global event listener for all events (logging + ack)
   client.registerAllEventListener((message: DWClientDownStream) => {
     logger?.debug?.(
@@ -122,7 +201,7 @@ export async function startDingTalkStreamClient(
     await client.connect();
     logger?.info?.("DingTalk Stream SDK connected successfully");
   } catch (err) {
-    logger?.error?.({ err: { message: (err as Error)?.message } }, "DingTalk Stream SDK connection failed");
+    logger?.error?.({ err: getConnectionErrorDetails(err) }, "DingTalk Stream SDK connection failed");
     throw err;
   }
 

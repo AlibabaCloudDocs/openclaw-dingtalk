@@ -11,6 +11,30 @@ export const CoalesceConfigSchema = z.object({
 });
 
 /**
+ * AI Card configuration.
+ */
+export const AICardConfigSchema = z.object({
+  /** Enable/disable AI card sending */
+  enabled: z.boolean().default(false),
+  /** Default template ID */
+  templateId: z.string().optional(),
+  /** Auto-generate card replies from text */
+  autoReply: z.boolean().default(true),
+  /** Text parameter key used for auto replies */
+  textParamKey: z.string().optional(),
+  /** Default card data for auto replies */
+  defaultCardData: z.record(z.unknown()).optional(),
+  /** Callback type for card instance */
+  callbackType: z.enum(["STREAM", "HTTP"]).default("STREAM"),
+  /** Throttle interval for streaming updates */
+  updateThrottleMs: z.number().min(0).default(800),
+  /** Fallback reply mode when card sending fails */
+  fallbackReplyMode: z.enum(["text", "markdown"]).optional(),
+  /** Default openSpace payload (pass-through) */
+  openSpace: z.record(z.unknown()).optional(),
+});
+
+/**
  * Canonical channel id + plugin id (used for config compatibility).
  */
 export const DINGTALK_CHANNEL_ID = "clawdbot-dingtalk";
@@ -88,6 +112,9 @@ export const DingTalkConfigSchema = z.object({
   /** Thinking mode for Clawdbot */
   thinking: z.enum(["off", "minimal", "low", "medium", "high"]).default("off"),
 
+  /** AI Card config */
+  aiCard: AICardConfigSchema.optional(),
+
   /** Multi-account configuration */
   accounts: z
     .record(
@@ -115,6 +142,7 @@ export const DingTalkConfigSchema = z.object({
         showToolStatus: z.boolean().optional(),
         showToolResult: z.boolean().optional(),
         thinking: z.enum(["off", "minimal", "low", "medium", "high"]).optional(),
+        aiCard: AICardConfigSchema.partial().optional(),
       })
     )
     .optional(),
@@ -122,6 +150,7 @@ export const DingTalkConfigSchema = z.object({
 
 export type DingTalkConfig = z.infer<typeof DingTalkConfigSchema>;
 export type CoalesceConfig = z.infer<typeof CoalesceConfigSchema>;
+export type AICardConfig = z.infer<typeof AICardConfigSchema>;
 
 /**
  * Default values for coalesce config

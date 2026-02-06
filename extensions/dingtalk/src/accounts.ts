@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 type ClawdbotConfig = any;
 import {
   type CoalesceConfig,
+  type AICardConfig,
   type DingTalkConfig,
   DEFAULT_ACCOUNT_ID,
   DEFAULT_COALESCE,
@@ -47,6 +48,19 @@ export type ResolvedDingTalkAccount = {
 
   // AI settings
   thinking: "off" | "minimal" | "low" | "medium" | "high";
+
+  // AI card settings
+  aiCard: {
+    enabled: boolean;
+    templateId?: string;
+    autoReply: boolean;
+    textParamKey?: string;
+    defaultCardData?: Record<string, unknown>;
+    callbackType: "STREAM" | "HTTP";
+    updateThrottleMs: number;
+    fallbackReplyMode?: "text" | "markdown";
+    openSpace?: Record<string, unknown>;
+  };
 };
 
 /**
@@ -183,6 +197,20 @@ export function resolveDingTalkAccount(params: {
   const showToolResult = accountConfig?.showToolResult ?? section?.showToolResult ?? false;
   const thinking = accountConfig?.thinking ?? section?.thinking ?? "off";
 
+  const baseAICard: AICardConfig | undefined = section?.aiCard;
+  const accountAICard: AICardConfig | undefined = accountConfig?.aiCard;
+  const aiCard = {
+    enabled: accountAICard?.enabled ?? baseAICard?.enabled ?? false,
+    templateId: accountAICard?.templateId ?? baseAICard?.templateId,
+    autoReply: accountAICard?.autoReply ?? baseAICard?.autoReply ?? true,
+    textParamKey: accountAICard?.textParamKey ?? baseAICard?.textParamKey,
+    defaultCardData: accountAICard?.defaultCardData ?? baseAICard?.defaultCardData,
+    callbackType: accountAICard?.callbackType ?? baseAICard?.callbackType ?? "STREAM",
+    updateThrottleMs: accountAICard?.updateThrottleMs ?? baseAICard?.updateThrottleMs ?? 800,
+    fallbackReplyMode: accountAICard?.fallbackReplyMode ?? baseAICard?.fallbackReplyMode,
+    openSpace: accountAICard?.openSpace ?? baseAICard?.openSpace,
+  };
+
   // Merge coalesce config
   const baseCoalesce = section?.coalesce ?? DEFAULT_COALESCE;
   const accountCoalesce = accountConfig?.coalesce;
@@ -217,6 +245,7 @@ export function resolveDingTalkAccount(params: {
     showToolStatus,
     showToolResult,
     thinking,
+    aiCard,
   };
 }
 

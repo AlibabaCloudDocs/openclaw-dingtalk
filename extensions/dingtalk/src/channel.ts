@@ -20,12 +20,21 @@ import { DEFAULT_ACCOUNT_ID, DINGTALK_CHANNEL_ID, DINGTALK_NPM_PACKAGE } from ".
 import { chunkMarkdownText } from "./send/chunker.js";
 import { monitorDingTalkProvider } from "./monitor.js";
 import { probeDingTalk } from "./probe.js";
-import { sendProactiveMessage, sendImageMessage, sendActionCardMessage, sendMediaByPath } from "./api/send-message.js";
+import { sendProactiveMessage, sendImageMessage, sendActionCardMessage, sendMediaByPath, parseTarget } from "./api/send-message.js";
 import { isLocalPath, isImageUrl } from "./api/media-upload.js";
 import { ALIYUN_MCP_DEFAULT_ENDPOINTS, ALIYUN_MCP_DEFAULT_TIMEOUT_SECONDS } from "./mcp/constants.js";
 import { getOrCreateTokenManager } from "./runtime.js";
 import type { StreamLogger } from "./stream/types.js";
 import type { DingTalkChannelData } from "./types/channel-data.js";
+import { createCardInstance, updateCardInstance, deliverCardInstance, createAndDeliverCardInstance } from "./api/card-instances.js";
+import {
+  buildCardDataFromText,
+  ensureCardFinishedStatus,
+  generateOutTrackId,
+  normalizeOpenSpaceId,
+  resolveOpenSpace,
+  resolveTemplateId,
+} from "./util/ai-card.js";
 
 /**
  * Adapt clawdbot SubsystemLogger to StreamLogger interface.
@@ -123,6 +132,20 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
         apiBase: { type: "string" },
         openPath: { type: "string" },
         subscriptionsJson: { type: "string" },
+        aiCard: {
+          type: "object",
+          properties: {
+            enabled: { type: "boolean", default: false },
+            templateId: { type: "string" },
+            autoReply: { type: "boolean", default: true },
+            textParamKey: { type: "string" },
+            defaultCardData: { type: "object" },
+            callbackType: { type: "string", enum: ["STREAM", "HTTP"], default: "STREAM" },
+            updateThrottleMs: { type: "number", default: 800 },
+            fallbackReplyMode: { type: "string", enum: ["text", "markdown"] },
+            openSpace: { type: "object" },
+          },
+        },
         aliyunMcp: {
           type: "object",
           additionalProperties: false,
@@ -201,6 +224,15 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
       apiBase: { label: "API 基础 URL", help: "钉钉 API 基础地址（默认：https://api.dingtalk.com）", advanced: true },
       openPath: { label: "Open Path", help: "Stream 连接路径（默认：/v1.0/gateway/connections/open）", advanced: true },
       subscriptionsJson: { label: "订阅配置 JSON", help: "自定义订阅配置 JSON（高级用法）", advanced: true },
+      "aiCard.enabled": { label: "启用 AI 卡片", help: "是否启用高级互动卡片能力", advanced: true },
+      "aiCard.templateId": { label: "默认模板 ID", help: "AI 卡片默认模板 ID", advanced: true },
+      "aiCard.autoReply": { label: "自动卡片回复", help: "未显式指定 card 时自动用 AI 卡片回复", advanced: true },
+      "aiCard.textParamKey": { label: "文本变量 Key", help: "自动回复时文本映射的变量名", advanced: true },
+      "aiCard.defaultCardData": { label: "默认卡片数据", help: "自动回复时附加的默认变量", advanced: true },
+      "aiCard.callbackType": { label: "回调类型", help: "卡片回调类型（默认 STREAM）", advanced: true },
+      "aiCard.updateThrottleMs": { label: "更新节流 (ms)", help: "流式更新节流间隔", advanced: true },
+      "aiCard.fallbackReplyMode": { label: "失败回退模式", help: "卡片发送失败时的文本模式", advanced: true },
+      "aiCard.openSpace": { label: "默认 openSpace", help: "卡片投放 openSpace 结构（高级）", advanced: true },
       aliyunMcp: {
         label: "阿里云百炼 MCP",
         help: `四个内置 MCP 默认关闭。启用前请先在百炼控制台开通。MCP 广场：${BAILIAN_MCP_MARKET_URL}`,
@@ -481,6 +513,150 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
 
       const tokenManager = getOrCreateTokenManager(account);
       const channelData = payload.channelData?.dingtalk as DingTalkChannelData | undefined;
+
+      // Handle AI Card
+      if (channelData?.card || (account.aiCard.enabled && account.aiCard.autoReply && account.aiCard.templateId && payload.text?.trim())) {
+        const card = channelData?.card ?? {
+          cardData: buildCardDataFromText({
+            account,
+            text: payload.text?.trim() ?? "",
+          }),
+        };
+
+        const fallbackToText = async (reason: string) => {
+          if (!payload.text) {
+            return {
+              channel: "dingtalk",
+              ok: false,
+              error: new Error(reason),
+              messageId: "",
+            };
+          }
+
+          const fallbackMode = account.aiCard.fallbackReplyMode ?? account.replyMode;
+          const fallback = await sendProactiveMessage({
+            account,
+            to,
+            text: payload.text,
+            replyMode: fallbackMode,
+            tokenManager,
+          });
+
+          return {
+            channel: "dingtalk",
+            ok: fallback.ok,
+            messageId: fallback.processQueryKey || "",
+            ...(fallback.error ? { error: fallback.error } : {}),
+          };
+        };
+
+        if (!account.aiCard.enabled) {
+          return fallbackToText("AI Card is disabled for this account.");
+        }
+
+        const templateId = resolveTemplateId(account, card);
+        if (!templateId) {
+          return fallbackToText("Missing AI card templateId.");
+        }
+
+        let { openSpace, openSpaceId } = resolveOpenSpace({ account, card });
+        const target = parseTarget(to);
+        if (!openSpaceId && target.type === "group") {
+          openSpaceId = `dtv1.card//IM_GROUP.${target.id}`;
+        }
+        if (!openSpaceId && target.type === "user") {
+          openSpaceId = `dtv1.card//IM_ROBOT.${target.id}`;
+        }
+        openSpaceId = normalizeOpenSpaceId(openSpaceId);
+
+        if (!openSpace && !openSpaceId) {
+          return fallbackToText("Missing openSpace/openSpaceId for AI card delivery.");
+        }
+
+        const outTrackId = card.outTrackId ?? generateOutTrackId("card");
+        const callbackType = card.callbackType ?? account.aiCard.callbackType;
+        const effectiveCardData = card.stream === true
+          ? card.cardData
+          : ensureCardFinishedStatus(card.cardData);
+
+        let result;
+        if (card.mode === "update" || card.cardInstanceId) {
+          result = await updateCardInstance({
+            account,
+            cardInstanceId: card.cardInstanceId,
+            outTrackId,
+            cardData: effectiveCardData,
+            privateData: card.privateData,
+            openSpace,
+            openSpaceId,
+            callbackType,
+            tokenManager,
+          });
+        } else {
+          const baseOpenSpace = openSpace ?? {};
+          const openSpacePayload = target.type === "group"
+            ? {
+                ...baseOpenSpace,
+                imGroupOpenSpaceModel: {
+                  ...(baseOpenSpace as any).imGroupOpenSpaceModel,
+                },
+                imGroupOpenDeliverModel: {
+                  robotCode: account.clientId,
+                },
+              }
+            : {
+                ...baseOpenSpace,
+                imRobotOpenSpaceModel: {
+                  ...(baseOpenSpace as any).imRobotOpenSpaceModel,
+                },
+                imRobotOpenDeliverModel: {
+                  spaceType: "IM_ROBOT",
+                  robotCode: account.clientId,
+                },
+              };
+
+          result = await createAndDeliverCardInstance({
+            account,
+            templateId,
+            outTrackId,
+            cardData: effectiveCardData,
+            privateData: card.privateData,
+            openSpace: openSpacePayload,
+            openSpaceId,
+            callbackType,
+            userId: target.type === "user" ? target.id : undefined,
+            userIdType: target.type === "user" ? 1 : undefined,
+            robotCode: account.clientId,
+            tokenManager,
+          });
+        }
+
+        if (result.ok) {
+          return {
+            channel: "dingtalk",
+            ok: true,
+            messageId: result.cardInstanceId ?? outTrackId,
+          };
+        }
+
+        if (!card.cardInstanceId && (card.mode !== "update") && openSpaceId) {
+          await deliverCardInstance({
+            account,
+            outTrackId,
+            openSpaceId,
+            userIdType: 1,
+            imGroupOpenDeliverModel: target.type === "group"
+              ? { robotCode: account.clientId }
+              : undefined,
+            imRobotOpenDeliverModel: target.type === "user"
+              ? { spaceType: "IM_ROBOT", robotCode: account.clientId }
+              : undefined,
+            tokenManager,
+          });
+        }
+
+        return fallbackToText(result.error?.message ?? "AI Card send failed");
+      }
 
       // Handle ActionCard
       if (channelData?.actionCard) {
