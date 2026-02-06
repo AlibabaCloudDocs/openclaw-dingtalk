@@ -198,7 +198,7 @@ export function buildAliyunMcpSearchWarnings(params: {
 
   if (pluginSearchEnabled && coreWebSearchEnabled !== false) {
     warnings.push(
-      "[dingtalk][aliyun-mcp] Plugin web_search is enabled but core tools.web.search.enabled is not false. Name conflict may block plugin web_search. Set tools.web.search.enabled=false.",
+      "[dingtalk][aliyun-mcp] Plugin web_search is enabled but core tools.web.search.enabled is not false. Name conflict may block plugin web_search. Auto-disable of core web_search will be attempted.",
     );
   }
 

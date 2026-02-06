@@ -10,6 +10,7 @@ import {
 } from "./config.js";
 import { ALIYUN_MCP_PLUGIN_TOOL_NAMES, type AliyunMcpToolId } from "./constants.js";
 import { autoSendWan26MediaToDingtalk } from "./wan26-auto-reply.js";
+import { ensureCoreWebSearchDisabledForAliyun } from "./core-search-sync.js";
 
 type LoggerLike = {
   debug?: (message: string) => void;
@@ -36,7 +37,7 @@ export type AliyunMcpToolRegistration = {
       content: Array<{ type: "text"; text: string }>;
       details: unknown;
     }>;
-  };
+  } | null | undefined;
 };
 
 export type AliyunMcpRegistrationResult = {
@@ -128,76 +129,112 @@ function createToolFactory(params: {
   label: string;
   description: string;
   parameters: unknown;
-  config: AliyunMcpConfig;
+  pluginConfig: unknown;
+  clawConfig?: OpenClawConfig;
   logger?: LoggerLike;
 }) {
   const pluginToolName = ALIYUN_MCP_PLUGIN_TOOL_NAMES[params.toolId];
+  const resolveActiveConfig = (ctxConfig?: OpenClawConfig) =>
+    resolveAliyunMcpConfig(params.pluginConfig, {
+      clawConfig: ctxConfig ?? params.clawConfig,
+    });
 
-  return (ctx: ToolContext) => ({
-    name: pluginToolName,
-    label: params.label,
-    description: params.description,
-    parameters: params.parameters,
-    execute: async (_toolCallId: string, args: unknown) => {
-      const apiKey = resolveAliyunMcpApiKey({
-        toolId: params.toolId,
-        config: params.config,
+  return (ctx: ToolContext) => {
+    const activeConfig = resolveActiveConfig(ctx.config);
+    if (!activeConfig.tools[params.toolId].enabled) {
+      return null;
+    }
+
+    if (params.toolId === "webSearch") {
+      void ensureCoreWebSearchDisabledForAliyun({
+        pluginConfig: params.pluginConfig,
+        clawConfig: ctx.config ?? params.clawConfig,
+        logger: params.logger,
+        reason: "tool_factory",
       });
-      if (!apiKey) {
-        return jsonResult(makeMissingApiKeyPayload(params.toolId));
-      }
+    }
 
-      const allArgs = (args ?? {}) as Record<string, unknown>;
-      const remoteArgs =
-        params.toolId === "webSearch" ? allArgs : normalizeRemoteArgs(allArgs);
-      const toolConfig = params.config.tools[params.toolId];
-
-      try {
-        const invoked = await invokeAliyunMcpTool({
-          toolId: params.toolId,
-          endpoint: toolConfig.endpoint,
-          apiKey,
-          timeoutSeconds: params.config.timeoutSeconds,
-          arguments: remoteArgs,
-          logger: params.logger,
-        });
-
-        let wan26AutoSend;
-        if (
-          params.toolId === "wan26Media" &&
-          params.config.tools.wan26Media.autoSendToDingtalk
-        ) {
-          wan26AutoSend = await autoSendWan26MediaToDingtalk({
-            payload: invoked.result,
-            config: ctx.config,
-            messageChannel: ctx.messageChannel,
-            sessionKey: ctx.sessionKey,
-            agentAccountId: ctx.agentAccountId,
+    return {
+      name: pluginToolName,
+      label: params.label,
+      description: params.description,
+      parameters: params.parameters,
+      execute: async (_toolCallId: string, args: unknown) => {
+        const executionConfig = resolveActiveConfig(ctx.config);
+        const executionToolConfig = executionConfig.tools[params.toolId];
+        if (!executionToolConfig.enabled) {
+          return jsonResult({
+            ok: false,
+            error: "tool_disabled",
+            tool: pluginToolName,
+            message: `${pluginToolName} is currently disabled by aliyunMcp config.`,
           });
         }
 
-        const payload = {
-          ok: !isToolError(invoked.result),
-          tool: pluginToolName,
-          endpoint: invoked.endpoint,
-          protocol: invoked.protocol,
-          remoteTool: invoked.remoteToolName,
-          availableRemoteTools: invoked.availableToolNames,
-          result: invoked.result,
-          wan26AutoSend,
-        };
-        return jsonResult(payload);
-      } catch (error) {
-        return jsonResult({
-          ok: false,
-          error: "mcp_call_failed",
-          tool: pluginToolName,
-          endpoint: toolConfig.endpoint,
-          message: String(error),
+        if (params.toolId === "webSearch") {
+          void ensureCoreWebSearchDisabledForAliyun({
+            pluginConfig: params.pluginConfig,
+            clawConfig: ctx.config ?? params.clawConfig,
+            logger: params.logger,
+            reason: "tool_execute",
+          });
+        }
+
+        const apiKey = resolveAliyunMcpApiKey({
+          toolId: params.toolId,
+          config: executionConfig,
         });
-      }
-    },
-  });
+        if (!apiKey) {
+          return jsonResult(makeMissingApiKeyPayload(params.toolId));
+        }
+
+        const allArgs = (args ?? {}) as Record<string, unknown>;
+        const remoteArgs = params.toolId === "webSearch" ? allArgs : normalizeRemoteArgs(allArgs);
+
+        try {
+          const invoked = await invokeAliyunMcpTool({
+            toolId: params.toolId,
+            endpoint: executionToolConfig.endpoint,
+            apiKey,
+            timeoutSeconds: executionConfig.timeoutSeconds,
+            arguments: remoteArgs,
+            logger: params.logger,
+          });
+
+          let wan26AutoSend;
+          if (params.toolId === "wan26Media" && executionConfig.tools.wan26Media.autoSendToDingtalk) {
+            wan26AutoSend = await autoSendWan26MediaToDingtalk({
+              payload: invoked.result,
+              config: ctx.config,
+              messageChannel: ctx.messageChannel,
+              sessionKey: ctx.sessionKey,
+              agentAccountId: ctx.agentAccountId,
+            });
+          }
+
+          const payload = {
+            ok: !isToolError(invoked.result),
+            tool: pluginToolName,
+            endpoint: invoked.endpoint,
+            protocol: invoked.protocol,
+            remoteTool: invoked.remoteToolName,
+            availableRemoteTools: invoked.availableToolNames,
+            result: invoked.result,
+            wan26AutoSend,
+          };
+          return jsonResult(payload);
+        } catch (error) {
+          return jsonResult({
+            ok: false,
+            error: "mcp_call_failed",
+            tool: pluginToolName,
+            endpoint: executionToolConfig.endpoint,
+            message: String(error),
+          });
+        }
+      },
+    };
+  };
 }
 
 export function createAliyunMcpRegistrations(params: {
@@ -215,9 +252,8 @@ export function createAliyunMcpRegistrations(params: {
     clawConfig: params.clawConfig,
   });
 
-  const tools: AliyunMcpToolRegistration[] = [];
-  if (resolved.tools.webSearch.enabled) {
-    tools.push({
+  const tools: AliyunMcpToolRegistration[] = [
+    {
       name: ALIYUN_MCP_PLUGIN_TOOL_NAMES.webSearch,
       factory: createToolFactory({
         toolId: "webSearch",
@@ -225,14 +261,12 @@ export function createAliyunMcpRegistrations(params: {
         description:
           "Search the web through Aliyun DashScope MCP WebSearch endpoint. Replaces default Brave web_search when core search is disabled.",
         parameters: WebSearchSchema,
-        config: resolved,
+        pluginConfig: params.pluginConfig,
+        clawConfig: params.clawConfig,
         logger: params.logger,
       }),
-    });
-  }
-
-  if (resolved.tools.codeInterpreter.enabled) {
-    tools.push({
+    },
+    {
       name: ALIYUN_MCP_PLUGIN_TOOL_NAMES.codeInterpreter,
       factory: createToolFactory({
         toolId: "codeInterpreter",
@@ -240,14 +274,12 @@ export function createAliyunMcpRegistrations(params: {
         description:
           "Run remote code-interpreter tasks through Aliyun DashScope MCP. Pass parameters directly or via arguments object.",
         parameters: GenericArgsSchema,
-        config: resolved,
+        pluginConfig: params.pluginConfig,
+        clawConfig: params.clawConfig,
         logger: params.logger,
       }),
-    });
-  }
-
-  if (resolved.tools.webParser.enabled) {
-    tools.push({
+    },
+    {
       name: ALIYUN_MCP_PLUGIN_TOOL_NAMES.webParser,
       factory: createToolFactory({
         toolId: "webParser",
@@ -255,14 +287,12 @@ export function createAliyunMcpRegistrations(params: {
         description:
           "Parse and extract web content through Aliyun DashScope MCP WebParser. Pass parameters directly or via arguments object.",
         parameters: GenericArgsSchema,
-        config: resolved,
+        pluginConfig: params.pluginConfig,
+        clawConfig: params.clawConfig,
         logger: params.logger,
       }),
-    });
-  }
-
-  if (resolved.tools.wan26Media.enabled) {
-    tools.push({
+    },
+    {
       name: ALIYUN_MCP_PLUGIN_TOOL_NAMES.wan26Media,
       factory: createToolFactory({
         toolId: "wan26Media",
@@ -270,11 +300,12 @@ export function createAliyunMcpRegistrations(params: {
         description:
           "Generate image/video through Aliyun DashScope MCP Wan2.6. Supports optional auto-send back to current DingTalk session.",
         parameters: GenericArgsSchema,
-        config: resolved,
+        pluginConfig: params.pluginConfig,
+        clawConfig: params.clawConfig,
         logger: params.logger,
       }),
-    });
-  }
+    },
+  ];
 
   return {
     config: resolved,

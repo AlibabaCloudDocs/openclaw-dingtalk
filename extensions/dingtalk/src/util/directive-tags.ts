@@ -22,6 +22,29 @@ function stripDirectiveTagsRaw(text: string, replacement: string): string {
   return cleaned;
 }
 
+function shouldKeepWordBoundary(left?: string, right?: string): boolean {
+  if (!left || !right) return false;
+  if (/\s/.test(left) || /\s/.test(right)) return false;
+  return true;
+}
+
+function stripDirectiveTagsRawPreserveFormatting(text: string): string {
+  const stripWithBoundary = (input: string, re: RegExp): string =>
+    input.replace(re, (match: string, ...args: unknown[]) => {
+      const offset = args[args.length - 2] as number;
+      const source = args[args.length - 1] as string;
+      const left = source[offset - 1];
+      const right = source[offset + match.length];
+      return shouldKeepWordBoundary(left, right) ? " " : "";
+    });
+
+  let cleaned = text;
+  cleaned = stripWithBoundary(cleaned, AUDIO_TAG_RE);
+  cleaned = stripWithBoundary(cleaned, REPLY_TAG_RE);
+  cleaned = stripWithBoundary(cleaned, GENERIC_TAG_RE);
+  return cleaned;
+}
+
 /**
  * 规范化空白字符
  */
@@ -51,7 +74,7 @@ export function stripDirectiveTags(text: string): string {
  */
 export function stripDirectiveTagsPreserveFormatting(text: string): string {
   if (!text) return "";
-  return stripDirectiveTagsRaw(text, "");
+  return stripDirectiveTagsRawPreserveFormatting(text);
 }
 
 /**

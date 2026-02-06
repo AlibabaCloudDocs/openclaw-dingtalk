@@ -69,6 +69,11 @@ describe("stripDirectiveTagsPreserveFormatting", () => {
     const input = "[[audio_as_voice]]\n";
     expect(stripDirectiveTagsPreserveFormatting(input)).toBe("\n");
   });
+
+  it("keeps a single boundary space when directive is between words", () => {
+    const input = "hello[[reply_to_current]]world";
+    expect(stripDirectiveTagsPreserveFormatting(input)).toBe("hello world");
+  });
 });
 
 describe("isOnlyDirectiveTags", () => {

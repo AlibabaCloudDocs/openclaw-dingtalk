@@ -30,7 +30,7 @@ function toConfig(toggles: ToggleCase) {
 }
 
 describe("createAliyunMcpRegistrations", () => {
-  it("registers no tools by default", () => {
+  it("always registers four MCP tool factories", () => {
     const result = createAliyunMcpRegistrations({
       pluginConfig: {},
       clawConfig: {
@@ -41,10 +41,10 @@ describe("createAliyunMcpRegistrations", () => {
         },
       } as any,
     });
-    expect(result.tools).toHaveLength(0);
+    expect(result.tools.map((tool) => tool.name)).toEqual([...TOOL_NAMES]);
   });
 
-  it("supports all 16 toggle combinations", () => {
+  it("supports all 16 toggle combinations via factory-level visibility", () => {
     for (let mask = 0; mask < 16; mask += 1) {
       const toggles: ToggleCase = {
         webSearch: Boolean(mask & 1),
@@ -54,38 +54,94 @@ describe("createAliyunMcpRegistrations", () => {
       };
       const result = createAliyunMcpRegistrations({
         pluginConfig: toConfig(toggles),
+        clawConfig: {
+          tools: {
+            web: {
+              search: { enabled: false },
+            },
+          },
+        } as any,
       });
-      const names = result.tools.map((tool) => tool.name);
+      const visibleNames = result.tools
+        .filter((tool) => tool.factory({ config: { tools: { web: { search: { enabled: false } } } } as any }))
+        .map((tool) => tool.name);
 
       const expected: string[] = [];
       if (toggles.webSearch) expected.push(TOOL_NAMES[0]);
       if (toggles.codeInterpreter) expected.push(TOOL_NAMES[1]);
       if (toggles.webParser) expected.push(TOOL_NAMES[2]);
       if (toggles.wan26Media) expected.push(TOOL_NAMES[3]);
-      expect(names).toEqual(expected);
+      expect(visibleNames).toEqual(expected);
     }
   });
 
   it("uses channel config toggles when plugin config is empty", () => {
+    const clawConfig = {
+      tools: {
+        web: {
+          search: { enabled: false },
+        },
+      },
+      channels: {
+        [DINGTALK_CHANNEL_ID]: {
+          aliyunMcp: {
+            tools: {
+              webSearch: { enabled: true },
+              codeInterpreter: { enabled: false },
+              webParser: { enabled: false },
+              wan26Media: { enabled: true },
+            },
+          },
+        },
+      },
+    } as any;
     const result = createAliyunMcpRegistrations({
       pluginConfig: {},
+      clawConfig,
+    });
+    const names = result.tools
+      .filter((tool) => tool.factory({ config: clawConfig }))
+      .map((tool) => tool.name);
+    expect(names).toEqual(["web_search", "aliyun_wan26_media"]);
+  });
+
+  it("returns null factory result when tool is disabled in runtime config", () => {
+    const result = createAliyunMcpRegistrations({
+      pluginConfig: toConfig({
+        webSearch: true,
+        codeInterpreter: false,
+        webParser: false,
+        wan26Media: false,
+      }),
       clawConfig: {
+        tools: {
+          web: {
+            search: { enabled: false },
+          },
+        },
+      } as any,
+    });
+    const webSearch = result.tools.find((tool) => tool.name === "web_search");
+    expect(webSearch).toBeTruthy();
+    const runtimeTool = webSearch?.factory({
+      config: {
+        tools: {
+          web: {
+            search: { enabled: false },
+          },
+        },
         channels: {
           [DINGTALK_CHANNEL_ID]: {
             aliyunMcp: {
               tools: {
-                webSearch: { enabled: true },
-                codeInterpreter: { enabled: false },
-                webParser: { enabled: false },
-                wan26Media: { enabled: true },
+                webSearch: { enabled: false },
               },
             },
           },
         },
       } as any,
     });
-    const names = result.tools.map((tool) => tool.name);
-    expect(names).toEqual(["web_search", "aliyun_wan26_media"]);
+    expect(runtimeTool).toBeNull();
   });
 
   it("warns no-search when plugin search is off and core search is disabled", () => {

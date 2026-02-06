@@ -23,6 +23,7 @@ import { probeDingTalk } from "./probe.js";
 import { sendProactiveMessage, sendImageMessage, sendActionCardMessage, sendMediaByPath, parseTarget } from "./api/send-message.js";
 import { isLocalPath, isImageUrl } from "./api/media-upload.js";
 import { ALIYUN_MCP_DEFAULT_ENDPOINTS, ALIYUN_MCP_DEFAULT_TIMEOUT_SECONDS } from "./mcp/constants.js";
+import { ensureCoreWebSearchDisabledForAliyun } from "./mcp/core-search-sync.js";
 import { getOrCreateTokenManager } from "./runtime.js";
 import type { StreamLogger } from "./stream/types.js";
 import type { DingTalkChannelData } from "./types/channel-data.js";
@@ -799,6 +800,17 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
       }
 
       log?.info?.(`[${account.accountId}] starting DingTalk stream provider`);
+
+      void ensureCoreWebSearchDisabledForAliyun({
+        pluginConfig: {},
+        clawConfig: cfg,
+        logger: {
+          info: (message) => log?.info?.(message),
+          warn: (message) => log?.warn?.(message),
+          error: (message) => log?.error?.(message),
+        },
+        reason: "channel_start",
+      });
 
       return monitorDingTalkProvider({
         account,
