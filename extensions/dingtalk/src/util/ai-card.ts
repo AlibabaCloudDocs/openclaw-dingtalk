@@ -25,9 +25,25 @@ function isGroupChatType(chatType: string | undefined): boolean {
   return /group|chat|2|multi/.test(ct);
 }
 
+export function resolveCardUserId(chat: ChatbotMessage): string | undefined {
+  const rawData = (chat.raw as { data?: unknown } | undefined)?.data;
+  if (rawData && typeof rawData === "object") {
+    const data = rawData as Record<string, unknown>;
+    const senderId = data.senderId;
+    if (typeof senderId === "string" && senderId) {
+      return senderId;
+    }
+    const userId = data.userId;
+    if (typeof userId === "string" && userId) {
+      return userId;
+    }
+  }
+  return chat.senderId || undefined;
+}
+
 export function deriveOpenSpaceIdFromChat(chat: ChatbotMessage): string | undefined {
   const conv = chat.conversationId;
-  const sender = chat.senderId;
+  const sender = resolveCardUserId(chat);
   if (isGroupChatType(chat.chatType)) {
     if (!conv) return undefined;
     return `dtv1.card//im_group.${conv}`;
@@ -38,7 +54,7 @@ export function deriveOpenSpaceIdFromChat(chat: ChatbotMessage): string | undefi
 
 export function deriveOpenSpaceFromChat(chat: ChatbotMessage): Record<string, unknown> | undefined {
   const conv = chat.conversationId;
-  const sender = chat.senderId;
+  const sender = resolveCardUserId(chat);
   if (isGroupChatType(chat.chatType) && conv) {
     return {
       imGroupOpenSpaceModel: {

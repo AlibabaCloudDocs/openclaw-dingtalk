@@ -114,6 +114,14 @@ function extractCardInstanceId(data: any): string | undefined {
 function extractApiError(data: any): { ok: boolean; message?: string } {
   if (!data || typeof data !== "object") return { ok: true };
 
+  const extractDeliverFailure = (rows: any[]): { ok: boolean; message?: string } => {
+    const failed = rows.find((item: any) => item && item.success === false);
+    if (!failed) return { ok: true };
+    const space = failed.spaceType && failed.spaceId ? `${failed.spaceType}:${failed.spaceId}` : undefined;
+    const reason = failed.errorMsg ?? failed.errorMessage ?? failed.message ?? "deliver failed";
+    return { ok: false, message: space ? `${reason} (${space})` : reason };
+  };
+
   const errcode = data.errcode ?? data.errorCode ?? data.code ?? data.error_code ?? data.error;
   if (typeof errcode === "number" && errcode !== 0) {
     return { ok: false, message: data.errmsg ?? data.message ?? data.errorMessage ?? String(errcode) };
@@ -126,6 +134,10 @@ function extractApiError(data: any): { ok: boolean; message?: string } {
   }
 
   const result = data.result;
+  if (Array.isArray(result)) {
+    const rowStatus = extractDeliverFailure(result);
+    if (!rowStatus.ok) return rowStatus;
+  }
   if (result && typeof result === "object") {
     if (result.success === false) {
       return { ok: false, message: result.message ?? result.errorMsg ?? "DingTalk result error" };
@@ -137,12 +149,8 @@ function extractApiError(data: any): { ok: boolean; message?: string } {
       return { ok: false, message: result.errmsg ?? result.message ?? result.errcode };
     }
     if (Array.isArray(result.deliverResults)) {
-      const failed = result.deliverResults.find((item: any) => item && item.success === false);
-      if (failed) {
-        const space = failed.spaceType && failed.spaceId ? `${failed.spaceType}:${failed.spaceId}` : undefined;
-        const reason = failed.errorMsg ?? failed.errorMessage ?? failed.message ?? "deliver failed";
-        return { ok: false, message: space ? `${reason} (${space})` : reason };
-      }
+      const deliverStatus = extractDeliverFailure(result.deliverResults);
+      if (!deliverStatus.ok) return deliverStatus;
     }
   }
   return { ok: true };

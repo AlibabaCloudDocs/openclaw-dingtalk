@@ -23,7 +23,13 @@ import { parseMediaProtocol, hasMediaTags, replaceMediaTags } from "./media-prot
 import { processMediaItems, uploadMediaItem } from "./send/media-sender.js";
 import { DEFAULT_DINGTALK_SYSTEM_PROMPT, buildSenderContext } from "./system-prompt.js";
 import type { DingTalkAICard } from "./types/channel-data.js";
-import { generateOutTrackId, resolveOpenSpace, resolveTemplateId, buildCardDataFromText } from "./util/ai-card.js";
+import {
+  buildCardDataFromText,
+  generateOutTrackId,
+  resolveCardUserId,
+  resolveOpenSpace,
+  resolveTemplateId,
+} from "./util/ai-card.js";
 
 export interface MonitorDingTalkOpts {
   account: ResolvedDingTalkAccount;
@@ -333,6 +339,7 @@ export async function monitorDingTalkProvider(
     } else {
       const isGroup = isGroupChatType(params.chat.chatType);
       const senderId = params.chat.senderId;
+      const cardUserId = resolveCardUserId(params.chat);
       const baseOpenSpace = openSpace ?? {};
 
       const openSpacePayload = isGroup
@@ -366,7 +373,7 @@ export async function monitorDingTalkProvider(
         openSpace: openSpacePayload,
         openSpaceId,
         callbackType,
-        userId: senderId,
+        userId: cardUserId,
         userIdType: 1,
         robotCode: account.clientId,
         tokenManager,
@@ -406,7 +413,7 @@ export async function monitorDingTalkProvider(
           imRobotOpenDeliverModel: !isGroup
             ? {
               robotCode: account.clientId,
-              userIds: senderId ? [senderId] : undefined,
+              userIds: cardUserId ? [cardUserId] : undefined,
             }
             : undefined,
           tokenManager,

@@ -2,7 +2,13 @@
  * Tests for DingTalk AI card instance APIs.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createCardInstance, updateCardInstance, appendCardSpaces, createAndDeliverCardInstance } from "./card-instances.js";
+import {
+  appendCardSpaces,
+  createAndDeliverCardInstance,
+  createCardInstance,
+  deliverCardInstance,
+  updateCardInstance,
+} from "./card-instances.js";
 import { clearAllTokens } from "./token-manager.js";
 import { BASIC_ACCOUNT } from "../../test/fixtures/configs.js";
 
@@ -129,6 +135,35 @@ describe("card instances API", () => {
       userId: "user001",
       userIdType: 1,
       robotCode: BASIC_ACCOUNT.clientId,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error?.message).toContain("spaces of card is empty");
+  });
+
+  it("treats deliver result array failure as API error for deliver", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ accessToken: "test-token", expireIn: 7200 }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(
+          JSON.stringify({
+            result: [
+              { spaceType: "IM", spaceId: "IM_ALL", success: false, errorMsg: "spaces of card is empty" },
+            ],
+            success: true,
+          })
+        ),
+      });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await deliverCardInstance({
+      account: BASIC_ACCOUNT,
+      outTrackId: "track-2",
+      openSpaceId: "dtv1.card//im_robot.user001",
     });
 
     expect(result.ok).toBe(false);
