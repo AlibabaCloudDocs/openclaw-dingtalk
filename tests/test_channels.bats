@@ -231,3 +231,19 @@ teardown() {
     run bash -c "source '$INSTALL_SCRIPT' 2>/dev/null; config_exists && echo 'exists' || echo 'not exists'"
     [ "$output" = "exists" ]
 }
+
+@test "generate_plugin_entry 为 dingtalk 生成 aliyunMcp 独立开关默认值" {
+    run bash -c "source '$INSTALL_SCRIPT' 2>/dev/null; generate_plugin_entry dingtalk"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"aliyunMcp"'* ]]
+    [[ "$output" == *'"webSearch": { "enabled": false }'* ]]
+    [[ "$output" == *'"codeInterpreter": { "enabled": false }'* ]]
+    [[ "$output" == *'"webParser": { "enabled": false }'* ]]
+    [[ "$output" == *'"wan26Media": { "enabled": false, "autoSendToDingtalk": true }'* ]]
+}
+
+@test "installer 默认关闭 core web_search 并写入 config_add_channel 逻辑" {
+    run bash -c "grep -n 'config_set \"tools.web.search.enabled\" \"false\"' '$INSTALL_SCRIPT'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"tools.web.search.enabled"* ]]
+}

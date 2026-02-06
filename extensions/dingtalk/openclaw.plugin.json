@@ -9,6 +9,87 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "aliyunMcp": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "apiKey": {
+            "type": "string"
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "minimum": 1,
+            "default": 60
+          },
+          "tools": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "webSearch": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "endpoint": {
+                    "type": "string",
+                    "default": "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/sse"
+                  }
+                }
+              },
+              "codeInterpreter": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "endpoint": {
+                    "type": "string",
+                    "default": "https://dashscope.aliyuncs.com/api/v1/mcps/code_interpreter_mcp/mcp"
+                  }
+                }
+              },
+              "webParser": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "endpoint": {
+                    "type": "string",
+                    "default": "https://dashscope.aliyuncs.com/api/v1/mcps/WebParser/sse"
+                  }
+                }
+              },
+              "wan26Media": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "endpoint": {
+                    "type": "string",
+                    "default": "https://dashscope.aliyuncs.com/api/v1/mcps/Wan26Media/sse"
+                  },
+                  "autoSendToDingtalk": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }

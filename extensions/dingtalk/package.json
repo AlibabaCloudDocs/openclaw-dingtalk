@@ -59,6 +59,8 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@sinclair/typebox": "^0.34.48",
     "dingtalk-stream": "^2.1.4",
     "ws": "^8.18.0",
     "zod": "^3.24.0"

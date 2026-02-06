@@ -22,6 +22,24 @@ Edit `~/.clawdbot/clawdbot.json`:
 ```json
 {
   "extensions": ["clawdbot-dingtalk"],
+  "plugins": {
+    "entries": {
+      "clawdbot-dingtalk": {
+        "enabled": true,
+        "config": {
+          "aliyunMcp": {
+            "timeoutSeconds": 60,
+            "tools": {
+              "webSearch": { "enabled": false },
+              "codeInterpreter": { "enabled": false },
+              "webParser": { "enabled": false },
+              "wan26Media": { "enabled": false, "autoSendToDingtalk": true }
+            }
+          }
+        }
+      }
+    }
+  },
   "channels": {
     "clawdbot-dingtalk": {
       "enabled": true,
@@ -45,9 +63,34 @@ Edit `~/.clawdbot/clawdbot.json`:
     "defaults": {
       "model": { "primary": "dashscope/qwen3-coder-plus" }
     }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": false
+      }
+    }
   }
  }
 ```
+
+## Aliyun MCP Tools (Optional)
+
+The plugin can register 4 built-in DashScope MCP tools, each with an independent switch:
+
+- `web_search` -> `WebSearch`
+- `aliyun_code_interpreter` -> `code_interpreter_mcp`
+- `aliyun_web_parser` -> `WebParser`
+- `aliyun_wan26_media` -> `Wan26Media` (supports auto-send back to current DingTalk session)
+
+All four switches default to `false` (disabled).  
+When plugin `web_search` is disabled and `tools.web.search.enabled=false`, no web search tool is available.
+
+API key priority (high -> low):
+
+1. `DASHSCOPE_MCP_<TOOL>_API_KEY`
+2. `DASHSCOPE_API_KEY`
+3. `plugins.entries.clawdbot-dingtalk.config.aliyunMcp.apiKey`
 
 ## DashScope Thinking Mode (Native)
 
