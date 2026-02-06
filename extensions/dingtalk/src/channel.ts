@@ -22,6 +22,7 @@ import { monitorDingTalkProvider } from "./monitor.js";
 import { probeDingTalk } from "./probe.js";
 import { sendProactiveMessage, sendImageMessage, sendActionCardMessage, sendMediaByPath } from "./api/send-message.js";
 import { isLocalPath, isImageUrl } from "./api/media-upload.js";
+import { ALIYUN_MCP_DEFAULT_ENDPOINTS, ALIYUN_MCP_DEFAULT_TIMEOUT_SECONDS } from "./mcp/constants.js";
 import { getOrCreateTokenManager } from "./runtime.js";
 import type { StreamLogger } from "./stream/types.js";
 import type { DingTalkChannelData } from "./types/channel-data.js";
@@ -78,6 +79,19 @@ const capabilities: ChannelCapabilities = {
   blockStreaming: true, // Use block-based streaming for DingTalk
 };
 
+const BAILIAN_MCP_MARKET_URL =
+  "https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market";
+const BAILIAN_MCP_DETAIL_URLS = {
+  webSearch:
+    "https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/WebSearch",
+  codeInterpreter:
+    "https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/code_interpreter_mcp",
+  webParser:
+    "https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/WebParser",
+  wan26Media:
+    "https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/Wan26Media",
+} as const;
+
 /**
  * DingTalk channel plugin.
  */
@@ -109,6 +123,60 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
         apiBase: { type: "string" },
         openPath: { type: "string" },
         subscriptionsJson: { type: "string" },
+        aliyunMcp: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            apiKey: { type: "string" },
+            timeoutSeconds: {
+              type: "number",
+              minimum: 1,
+              default: ALIYUN_MCP_DEFAULT_TIMEOUT_SECONDS,
+            },
+            tools: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                webSearch: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    enabled: { type: "boolean", default: false },
+                    endpoint: { type: "string", default: ALIYUN_MCP_DEFAULT_ENDPOINTS.webSearch },
+                  },
+                },
+                codeInterpreter: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    enabled: { type: "boolean", default: false },
+                    endpoint: {
+                      type: "string",
+                      default: ALIYUN_MCP_DEFAULT_ENDPOINTS.codeInterpreter,
+                    },
+                  },
+                },
+                webParser: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    enabled: { type: "boolean", default: false },
+                    endpoint: { type: "string", default: ALIYUN_MCP_DEFAULT_ENDPOINTS.webParser },
+                  },
+                },
+                wan26Media: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    enabled: { type: "boolean", default: false },
+                    endpoint: { type: "string", default: ALIYUN_MCP_DEFAULT_ENDPOINTS.wan26Media },
+                    autoSendToDingtalk: { type: "boolean", default: true },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     uiHints: {
@@ -133,6 +201,56 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
       apiBase: { label: "API 基础 URL", help: "钉钉 API 基础地址（默认：https://api.dingtalk.com）", advanced: true },
       openPath: { label: "Open Path", help: "Stream 连接路径（默认：/v1.0/gateway/connections/open）", advanced: true },
       subscriptionsJson: { label: "订阅配置 JSON", help: "自定义订阅配置 JSON（高级用法）", advanced: true },
+      aliyunMcp: {
+        label: "阿里云百炼 MCP",
+        help: `四个内置 MCP 默认关闭。启用前请先在百炼控制台开通。MCP 广场：${BAILIAN_MCP_MARKET_URL}`,
+      },
+      "aliyunMcp.apiKey": {
+        label: "DASHSCOPE API Key",
+        help: "可选兜底鉴权；建议优先使用环境变量 DASHSCOPE_MCP_<TOOL>_API_KEY。",
+        sensitive: true,
+        advanced: true,
+      },
+      "aliyunMcp.timeoutSeconds": { label: "MCP 超时（秒）", advanced: true },
+      "aliyunMcp.tools.webSearch.enabled": {
+        label: "启用联网搜索（WebSearch）",
+        help: `开通提醒：先在百炼控制台开通“联网搜索”MCP。详情：${BAILIAN_MCP_DETAIL_URLS.webSearch}`,
+      },
+      "aliyunMcp.tools.webSearch.endpoint": {
+        label: "联网搜索服务地址",
+        help: "默认使用百炼官方 WebSearch MCP 地址。",
+        advanced: true,
+      },
+      "aliyunMcp.tools.codeInterpreter.enabled": {
+        label: "启用代码解释器（code_interpreter_mcp）",
+        help: `开通提醒：先在百炼控制台开通“代码解释器”MCP。详情：${BAILIAN_MCP_DETAIL_URLS.codeInterpreter}`,
+      },
+      "aliyunMcp.tools.codeInterpreter.endpoint": {
+        label: "代码解释器服务地址",
+        help: "默认使用百炼官方 code_interpreter_mcp 地址。",
+        advanced: true,
+      },
+      "aliyunMcp.tools.webParser.enabled": {
+        label: "启用网页解析（WebParser）",
+        help: `开通提醒：先在百炼控制台开通“网页解析”MCP。详情：${BAILIAN_MCP_DETAIL_URLS.webParser}`,
+      },
+      "aliyunMcp.tools.webParser.endpoint": {
+        label: "网页解析服务地址",
+        help: "默认使用百炼官方 WebParser MCP 地址。",
+        advanced: true,
+      },
+      "aliyunMcp.tools.wan26Media.enabled": {
+        label: "启用通义万相2.6（Wan26Media）",
+        help: `开通提醒：先在百炼控制台开通“通义万相2.6-图像视频生成”MCP。详情：${BAILIAN_MCP_DETAIL_URLS.wan26Media}`,
+      },
+      "aliyunMcp.tools.wan26Media.endpoint": {
+        label: "通义万相2.6服务地址",
+        help: "默认使用百炼官方 Wan26Media MCP 地址。",
+        advanced: true,
+      },
+      "aliyunMcp.tools.wan26Media.autoSendToDingtalk": {
+        label: "万相结果自动回传钉钉会话",
+      },
     },
   },
 

@@ -203,9 +203,13 @@ function createToolFactory(params: {
 export function createAliyunMcpRegistrations(params: {
   pluginConfig: unknown;
   clawConfig?: OpenClawConfig;
+  channelId?: string;
   logger?: LoggerLike;
 }): AliyunMcpRegistrationResult {
-  const resolved = resolveAliyunMcpConfig(params.pluginConfig);
+  const resolved = resolveAliyunMcpConfig(params.pluginConfig, {
+    clawConfig: params.clawConfig,
+    channelId: params.channelId,
+  });
   const warnings = buildAliyunMcpSearchWarnings({
     config: resolved,
     clawConfig: params.clawConfig,

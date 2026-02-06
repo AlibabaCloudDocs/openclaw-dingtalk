@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildAliyunMcpSearchWarnings, resolveAliyunMcpApiKey, resolveAliyunMcpConfig } from "./config.js";
+import { DINGTALK_CHANNEL_ID } from "../config-schema.js";
 
 describe("resolveAliyunMcpConfig", () => {
   it("defaults all tools to disabled", () => {
@@ -36,6 +37,70 @@ describe("resolveAliyunMcpConfig", () => {
     expect(resolved.tools.codeInterpreter.enabled).toBe(true);
     expect(resolved.tools.webParser.enabled).toBe(true);
     expect(resolved.tools.wan26Media.enabled).toBe(true);
+    expect(resolved.tools.wan26Media.autoSendToDingtalk).toBe(false);
+  });
+
+  it("reads settings from channels.<id>.aliyunMcp when plugin config is empty", () => {
+    const resolved = resolveAliyunMcpConfig(
+      {},
+      {
+        clawConfig: {
+          channels: {
+            [DINGTALK_CHANNEL_ID]: {
+              aliyunMcp: {
+                timeoutSeconds: 45,
+                tools: {
+                  webSearch: { enabled: true, endpoint: "https://channel.example/search" },
+                  wan26Media: { enabled: true, autoSendToDingtalk: false },
+                },
+              },
+            },
+          },
+        } as any,
+      },
+    );
+
+    expect(resolved.timeoutSeconds).toBe(45);
+    expect(resolved.tools.webSearch.enabled).toBe(true);
+    expect(resolved.tools.webSearch.endpoint).toBe("https://channel.example/search");
+    expect(resolved.tools.wan26Media.enabled).toBe(true);
+    expect(resolved.tools.wan26Media.autoSendToDingtalk).toBe(false);
+  });
+
+  it("prefers channel config over plugin config when both are present", () => {
+    const resolved = resolveAliyunMcpConfig(
+      {
+        aliyunMcp: {
+          timeoutSeconds: 99,
+          apiKey: "plugin-key",
+          tools: {
+            webSearch: { enabled: false },
+            wan26Media: { autoSendToDingtalk: true },
+          },
+        },
+      },
+      {
+        clawConfig: {
+          channels: {
+            [DINGTALK_CHANNEL_ID]: {
+              aliyunMcp: {
+                timeoutSeconds: 10,
+                apiKey: "channel-key",
+                tools: {
+                  webSearch: { enabled: true, endpoint: "https://channel.example/search" },
+                  wan26Media: { autoSendToDingtalk: false },
+                },
+              },
+            },
+          },
+        } as any,
+      },
+    );
+
+    expect(resolved.timeoutSeconds).toBe(10);
+    expect(resolved.apiKey).toBe("channel-key");
+    expect(resolved.tools.webSearch.enabled).toBe(true);
+    expect(resolved.tools.webSearch.endpoint).toBe("https://channel.example/search");
     expect(resolved.tools.wan26Media.autoSendToDingtalk).toBe(false);
   });
 });
@@ -125,4 +190,3 @@ describe("buildAliyunMcpSearchWarnings", () => {
     expect(warnings.join("\n")).toContain("Name conflict");
   });
 });
-

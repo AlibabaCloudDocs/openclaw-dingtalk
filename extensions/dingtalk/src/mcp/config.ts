@@ -6,6 +6,7 @@ import {
   ALIYUN_MCP_DEFAULT_TIMEOUT_SECONDS,
   type AliyunMcpToolId,
 } from "./constants.js";
+import { DINGTALK_CHANNEL_ID } from "../config-schema.js";
 
 type PlainObject = Record<string, unknown>;
 
@@ -61,34 +62,82 @@ function readNumber(value: unknown): number | undefined {
   return undefined;
 }
 
-function buildToolConfig(raw: PlainObject | undefined, toolId: AliyunMcpToolId): AliyunMcpToolConfig {
+function buildToolConfig(
+  channelConfig: PlainObject | undefined,
+  pluginConfig: PlainObject | undefined,
+  toolId: AliyunMcpToolId,
+): AliyunMcpToolConfig {
   return {
-    enabled: readBoolean(raw?.enabled) ?? false,
-    endpoint: readString(raw?.endpoint) ?? ALIYUN_MCP_DEFAULT_ENDPOINTS[toolId],
+    enabled: readBoolean(channelConfig?.enabled) ?? readBoolean(pluginConfig?.enabled) ?? false,
+    endpoint:
+      readString(channelConfig?.endpoint) ??
+      readString(pluginConfig?.endpoint) ??
+      ALIYUN_MCP_DEFAULT_ENDPOINTS[toolId],
   };
 }
 
-export function resolveAliyunMcpConfig(pluginConfig: unknown): AliyunMcpConfig {
-  const root = asObject(pluginConfig);
-  const aliyunMcp = asObject(root?.aliyunMcp);
-  const tools = asObject(aliyunMcp?.tools);
+function readChannelAliyunMcpConfig(params: {
+  clawConfig?: OpenClawConfig;
+  channelId: string;
+}): PlainObject | undefined {
+  const root = asObject(params.clawConfig);
+  const channels = asObject(root?.channels);
+  const fromChannels = asObject(channels?.[params.channelId]);
+  const fromLegacyRoot = asObject(root?.[params.channelId]);
+  const channelSection = fromChannels ?? fromLegacyRoot;
+  return asObject(channelSection?.aliyunMcp);
+}
 
-  const webSearch = buildToolConfig(asObject(tools?.webSearch), "webSearch");
-  const codeInterpreter = buildToolConfig(asObject(tools?.codeInterpreter), "codeInterpreter");
-  const webParser = buildToolConfig(asObject(tools?.webParser), "webParser");
-  const wan26MediaRaw = asObject(tools?.wan26Media);
+export function resolveAliyunMcpConfig(
+  pluginConfig: unknown,
+  options?: { clawConfig?: OpenClawConfig; channelId?: string },
+): AliyunMcpConfig {
+  const pluginRoot = asObject(pluginConfig);
+  const pluginAliyunMcp = asObject(pluginRoot?.aliyunMcp);
+  const channelAliyunMcp = readChannelAliyunMcpConfig({
+    clawConfig: options?.clawConfig,
+    channelId: options?.channelId ?? DINGTALK_CHANNEL_ID,
+  });
+
+  const channelTools = asObject(channelAliyunMcp?.tools);
+  const pluginTools = asObject(pluginAliyunMcp?.tools);
+
+  const webSearch = buildToolConfig(
+    asObject(channelTools?.webSearch),
+    asObject(pluginTools?.webSearch),
+    "webSearch",
+  );
+  const codeInterpreter = buildToolConfig(
+    asObject(channelTools?.codeInterpreter),
+    asObject(pluginTools?.codeInterpreter),
+    "codeInterpreter",
+  );
+  const webParser = buildToolConfig(
+    asObject(channelTools?.webParser),
+    asObject(pluginTools?.webParser),
+    "webParser",
+  );
+  const wan26MediaChannel = asObject(channelTools?.wan26Media);
+  const wan26MediaPlugin = asObject(pluginTools?.wan26Media);
   const wan26Media: AliyunMcpWan26ToolConfig = {
-    ...buildToolConfig(wan26MediaRaw, "wan26Media"),
-    autoSendToDingtalk: readBoolean(wan26MediaRaw?.autoSendToDingtalk) ?? true,
+    ...buildToolConfig(wan26MediaChannel, wan26MediaPlugin, "wan26Media"),
+    autoSendToDingtalk:
+      readBoolean(wan26MediaChannel?.autoSendToDingtalk) ??
+      readBoolean(wan26MediaPlugin?.autoSendToDingtalk) ??
+      true,
   };
 
   const timeoutSeconds = Math.max(
     1,
-    Math.floor(readNumber(aliyunMcp?.timeoutSeconds) ?? ALIYUN_MCP_DEFAULT_TIMEOUT_SECONDS),
+    Math.floor(
+      readNumber(channelAliyunMcp?.timeoutSeconds) ??
+        readNumber(pluginAliyunMcp?.timeoutSeconds) ??
+        ALIYUN_MCP_DEFAULT_TIMEOUT_SECONDS,
+    ),
   );
 
   return {
-    apiKey: readString(aliyunMcp?.apiKey),
+    apiKey: readString(channelAliyunMcp?.apiKey) ?? readString(pluginAliyunMcp?.apiKey),
     timeoutSeconds,
     tools: {
       webSearch,
@@ -127,6 +176,7 @@ export function describeAliyunMcpApiKeyHints(toolId: AliyunMcpToolId): string {
     ...ALIYUN_MCP_API_KEY_ENV_BY_TOOL[toolId],
     ALIYUN_MCP_API_KEY_ENV_GLOBAL,
     "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.apiKey",
+    `channels.${DINGTALK_CHANNEL_ID}.aliyunMcp.apiKey`,
   ];
   return envNames.join(" / ");
 }
@@ -154,4 +204,3 @@ export function buildAliyunMcpSearchWarnings(params: {
 
   return warnings;
 }
-

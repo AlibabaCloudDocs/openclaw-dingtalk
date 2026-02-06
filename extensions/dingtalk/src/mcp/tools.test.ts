@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createAliyunMcpRegistrations } from "./tools.js";
+import { DINGTALK_CHANNEL_ID } from "../config-schema.js";
 
 const TOOL_NAMES = [
   "web_search",
@@ -65,6 +66,28 @@ describe("createAliyunMcpRegistrations", () => {
     }
   });
 
+  it("uses channel config toggles when plugin config is empty", () => {
+    const result = createAliyunMcpRegistrations({
+      pluginConfig: {},
+      clawConfig: {
+        channels: {
+          [DINGTALK_CHANNEL_ID]: {
+            aliyunMcp: {
+              tools: {
+                webSearch: { enabled: true },
+                codeInterpreter: { enabled: false },
+                webParser: { enabled: false },
+                wan26Media: { enabled: true },
+              },
+            },
+          },
+        },
+      } as any,
+    });
+    const names = result.tools.map((tool) => tool.name);
+    expect(names).toEqual(["web_search", "aliyun_wan26_media"]);
+  });
+
   it("warns no-search when plugin search is off and core search is disabled", () => {
     const result = createAliyunMcpRegistrations({
       pluginConfig: toConfig({
@@ -84,4 +107,3 @@ describe("createAliyunMcpRegistrations", () => {
     expect(result.warnings.join("\n")).toContain("No web search tool is available");
   });
 });
-
