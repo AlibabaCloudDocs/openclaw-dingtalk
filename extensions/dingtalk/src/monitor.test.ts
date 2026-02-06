@@ -210,6 +210,27 @@ describe("monitorDingTalkProvider", () => {
       // (This is accomplished by forcing chunkMode="newline" on the canonical channel id.)
       const cfg = call[0].cfg as any;
       expect(cfg?.channels?.[DINGTALK_CHANNEL_ID]?.chunkMode).toBe("newline");
+      expect(call[0].replyOptions?.disableBlockStreaming).toBe(false);
+    }
+  });
+
+  it("passes disableBlockStreaming=true when account blockStreaming is false", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, blockStreaming: false };
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    if (capturedCallback) {
+      await capturedCallback(createMockMessage({ text: "Test message" }));
+      await new Promise((r) => setTimeout(r, 50));
+
+      const call = (runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<
+        typeof vi.fn
+      >).mock.calls[0];
+      expect(call[0].replyOptions?.disableBlockStreaming).toBe(true);
     }
   });
 

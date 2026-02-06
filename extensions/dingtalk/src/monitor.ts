@@ -242,6 +242,7 @@ export async function monitorDingTalkProvider(
       cfg: dispatchConfig,
       dispatcherOptions: opts.dispatcherOptions as any,
       replyOptions: {
+        disableBlockStreaming: account.blockStreaming === false ? true : false,
         onReasoningStream: async (payload) => {
           if (!payload?.text && (!payload?.mediaUrls || payload.mediaUrls.length === 0)) {
             return;

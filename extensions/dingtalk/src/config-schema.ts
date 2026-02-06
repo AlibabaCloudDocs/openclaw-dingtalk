@@ -109,6 +109,9 @@ export const DingTalkConfigSchema = z.object({
   /** Show tool result messages (✅ ... 完成) */
   showToolResult: z.boolean().default(false),
 
+  /** Enable block streaming for incremental replies */
+  blockStreaming: z.boolean().default(true),
+
   /** Thinking mode for Clawdbot */
   thinking: z.enum(["off", "minimal", "low", "medium", "high"]).default("off"),
 
@@ -141,6 +144,7 @@ export const DingTalkConfigSchema = z.object({
         coalesce: CoalesceConfigSchema.optional(),
         showToolStatus: z.boolean().optional(),
         showToolResult: z.boolean().optional(),
+        blockStreaming: z.boolean().optional(),
         thinking: z.enum(["off", "minimal", "low", "medium", "high"]).optional(),
         aiCard: AICardConfigSchema.partial().optional(),
       })

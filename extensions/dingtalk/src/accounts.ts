@@ -45,6 +45,7 @@ export type ResolvedDingTalkAccount = {
   responsePrefix?: string;
   showToolStatus: boolean;
   showToolResult: boolean;
+  blockStreaming: boolean;
 
   // AI settings
   thinking: "off" | "minimal" | "low" | "medium" | "high";
@@ -195,6 +196,7 @@ export function resolveDingTalkAccount(params: {
   const responsePrefix = accountConfig?.responsePrefix ?? section?.responsePrefix;
   const showToolStatus = accountConfig?.showToolStatus ?? section?.showToolStatus ?? false;
   const showToolResult = accountConfig?.showToolResult ?? section?.showToolResult ?? false;
+  const blockStreaming = accountConfig?.blockStreaming ?? section?.blockStreaming ?? true;
   const thinking = accountConfig?.thinking ?? section?.thinking ?? "off";
 
   const baseAICard: AICardConfig | undefined = section?.aiCard;
@@ -244,6 +246,7 @@ export function resolveDingTalkAccount(params: {
     responsePrefix,
     showToolStatus,
     showToolResult,
+    blockStreaming,
     thinking,
     aiCard,
   };

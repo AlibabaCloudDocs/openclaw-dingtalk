@@ -31,6 +31,7 @@ export const BASIC_ACCOUNT: ResolvedDingTalkAccount = {
   mentionBypassUsers: [],
   showToolStatus: false,
   showToolResult: false,
+  blockStreaming: true,
   thinking: "off",
   aiCard: {
     enabled: false,

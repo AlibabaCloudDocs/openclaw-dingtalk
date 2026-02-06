@@ -139,6 +139,7 @@ clawdbot gateway
 | `tableMode` | `"code"` \| `"off"` | `"code"` | Table rendering mode |
 | `showToolStatus` | boolean | `false` | Show tool execution status |
 | `showToolResult` | boolean | `false` | Show tool results |
+| `blockStreaming` | boolean | `true` | Enable/disable block streaming before final reply |
 | `thinking` | string | `"off"` | Thinking mode (off/minimal/low/medium/high) |
 
 ## AI Card (高级互动卡片)
@@ -174,6 +175,7 @@ Enable AI Card capability via config:
 Notes:
 - `callbackType` should be `STREAM` to receive card callbacks over Stream API.
 - `autoReply=true` 会把普通文本回复映射成卡片变量。
+- `blockStreaming=true`（默认）会优先发送 block 增量；设为 `false` 时退化为 final-only（卡片仍可完成，但不增量）。
 - 新版默认会写入 `msgContent` 与 `text` 两个键；若配置了 `textParamKey`，还会同时写入该键，便于兼容不同模板变量命名。
 - Inbound AI card now uses a true streaming state machine:
   - create card instance

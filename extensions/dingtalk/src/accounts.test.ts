@@ -13,6 +13,7 @@ import {
   createEnvBasedConfig,
   createMultiAccountConfig,
 } from "../test/fixtures/configs.js";
+import { DINGTALK_CHANNEL_ID } from "./config-schema.js";
 
 describe("resolveDingTalkAccount", () => {
   const originalEnv = { ...process.env };
@@ -82,6 +83,7 @@ describe("resolveDingTalkAccount", () => {
     expect(account.allowFrom).toEqual([]);
     expect(account.showToolStatus).toBe(false);
     expect(account.showToolResult).toBe(false);
+    expect(account.blockStreaming).toBe(true);
     expect(account.isolateContextPerUserInGroup).toBe(false);
     expect(account.thinking).toBe("off");
     expect(account.aiCard.enabled).toBe(false);
@@ -123,6 +125,27 @@ describe("resolveDingTalkAccount", () => {
     const account = resolveDingTalkAccount({ cfg });
 
     expect(account.allowFrom).toEqual(["user1", "user2", "user3"]);
+  });
+
+  it("supports disabling blockStreaming at channel level", () => {
+    const cfg = createMockClawdbotConfig({
+      blockStreaming: false,
+    });
+    const account = resolveDingTalkAccount({ cfg });
+
+    expect(account.blockStreaming).toBe(false);
+  });
+
+  it("lets account-level blockStreaming override base config", () => {
+    const cfg = createMultiAccountConfig() as Record<string, any>;
+    cfg.channels[DINGTALK_CHANNEL_ID].blockStreaming = true;
+    cfg.channels[DINGTALK_CHANNEL_ID].accounts.team2.blockStreaming = false;
+
+    const team1 = resolveDingTalkAccount({ cfg, accountId: "team1" });
+    const team2 = resolveDingTalkAccount({ cfg, accountId: "team2" });
+
+    expect(team1.blockStreaming).toBe(true);
+    expect(team2.blockStreaming).toBe(false);
   });
 
   it("handles missing dingtalk section gracefully", () => {
