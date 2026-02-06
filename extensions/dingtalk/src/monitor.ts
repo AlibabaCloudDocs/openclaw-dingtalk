@@ -16,7 +16,7 @@ import { applyResponsePrefix, isGroupChatType, shouldEnforcePrefix } from "./uti
 import { DINGTALK_CHANNEL_ID } from "./config-schema.js";
 import { downloadMedia, uploadMedia } from "./api/media.js";
 import { uploadMediaToOAPI } from "./api/media-upload.js";
-import { sendFileMessage } from "./api/send-message.js";
+import { sendFileMessage, sendMediaByPath } from "./api/send-message.js";
 import { createCardInstance, updateCardInstance, deliverCardInstance, createAndDeliverCardInstance } from "./api/card-instances.js";
 import { extractThinkDirective, extractThinkOnceDirective, type ThinkLevel } from "./util/think-directive.js";
 import { parseMediaProtocol, hasMediaTags, replaceMediaTags } from "./media-protocol.js";
@@ -25,6 +25,7 @@ import { DEFAULT_DINGTALK_SYSTEM_PROMPT, buildSenderContext } from "./system-pro
 import type { DingTalkAICard } from "./types/channel-data.js";
 import {
   buildCardDataFromText,
+  ensureCardFinishedStatus,
   generateOutTrackId,
   normalizeOpenSpaceId,
   resolveCardUserId,
@@ -247,6 +248,8 @@ export async function monitorDingTalkProvider(
   async function maybeHandleAICardDelivery(params: {
     payload: {
       text?: string;
+      mediaUrl?: string;
+      mediaUrls?: string[];
       channelData?: { dingtalk?: Record<string, unknown> };
     };
     info: { kind: string };
@@ -255,19 +258,98 @@ export async function monitorDingTalkProvider(
   }): Promise<{ handled: boolean; ok: boolean; error?: Error }> {
     const channelData = params.payload.channelData?.dingtalk as { card?: DingTalkAICard } | undefined;
     let card = channelData?.card;
+
+    const autoEnabled =
+      account.aiCard.enabled &&
+      account.aiCard.autoReply &&
+      Boolean(account.aiCard.templateId);
+    if (!card && !autoEnabled) {
+      log?.debug?.(
+        {
+          aiCardEnabled: account.aiCard.enabled,
+          aiCardAutoReply: account.aiCard.autoReply,
+          hasTemplateId: Boolean(account.aiCard.templateId),
+        },
+        "Skipping AI card auto-reply (conditions not met)"
+      );
+      return { handled: false, ok: false };
+    }
+
+    if (!account.aiCard.enabled) {
+      return { handled: true, ok: false, error: new Error("AI Card is disabled for this account.") };
+    }
+
+    const chatIsGroup = isGroupChatType(params.chat.chatType);
+    const cardUserId = resolveCardUserId(params.chat);
+    const proactiveTarget = chatIsGroup
+      ? (params.chat.conversationId ? `group:${params.chat.conversationId}` : undefined)
+      : (cardUserId ? `user:${cardUserId}` : undefined);
+
+    const tokenManager = getOrCreateTokenManager(account);
+    const mediaErrors: string[] = [];
+    let mediaSentCount = 0;
+
+    const sendCardMedia = async (mediaUrl: string): Promise<void> => {
+      const normalized = mediaUrl.trim();
+      if (!normalized) return;
+      if (!proactiveTarget) {
+        mediaErrors.push(`missing target for ${normalized}`);
+        return;
+      }
+      const sent = await sendMediaByPath({
+        account,
+        to: proactiveTarget,
+        mediaUrl: normalized,
+        tokenManager,
+        logger: log,
+      });
+      if (sent.ok) {
+        mediaSentCount += 1;
+      } else {
+        mediaErrors.push(`${normalized}: ${sent.error?.message ?? "send failed"}`);
+      }
+    };
+
+    let cardText = params.payload.text?.trim() ?? "";
+    if (params.payload.mediaUrl?.trim()) {
+      await sendCardMedia(params.payload.mediaUrl);
+    }
+    if (Array.isArray(params.payload.mediaUrls)) {
+      for (const url of params.payload.mediaUrls) {
+        if (typeof url === "string" && url.trim()) {
+          await sendCardMedia(url);
+        }
+      }
+    }
+    if (cardText && hasMediaTags(cardText)) {
+      const parsed = parseMediaProtocol(cardText);
+      cardText = parsed.cleanedContent;
+      for (const item of parsed.items) {
+        if (item.type === "image" || item.type === "file") {
+          await sendCardMedia(item.path);
+          continue;
+        }
+        log?.info?.({ type: item.type, path: item.path }, "Skipping unsupported AI card media item");
+      }
+    }
+
+    if (!cardText && mediaSentCount > 0) {
+      cardText = "✅ 媒体已发送";
+    }
+    if (mediaErrors.length > 0) {
+      const mediaErrorSummary = `⚠️ 媒体发送失败: ${mediaErrors.join("; ")}`;
+      cardText = cardText ? `${cardText}\n\n${mediaErrorSummary}` : mediaErrorSummary;
+    }
+
     if (!card) {
-      const allowAuto =
-        account.aiCard.enabled &&
-        account.aiCard.autoReply &&
-        Boolean(account.aiCard.templateId) &&
-        Boolean(params.payload.text?.trim());
+      const allowAuto = autoEnabled && Boolean(cardText);
       if (!allowAuto) {
         log?.debug?.(
           {
             aiCardEnabled: account.aiCard.enabled,
             aiCardAutoReply: account.aiCard.autoReply,
             hasTemplateId: Boolean(account.aiCard.templateId),
-            hasText: Boolean(params.payload.text?.trim()),
+            hasText: Boolean(cardText),
           },
           "Skipping AI card auto-reply (conditions not met)"
         );
@@ -277,13 +359,9 @@ export async function monitorDingTalkProvider(
       card = {
         cardData: buildCardDataFromText({
           account,
-          text: params.payload.text?.trim() ?? "",
+          text: cardText,
         }),
       };
-    }
-
-    if (!account.aiCard.enabled) {
-      return { handled: true, ok: false, error: new Error("AI Card is disabled for this account.") };
     }
 
     const templateId = resolveTemplateId(account, card);
@@ -315,7 +393,9 @@ export async function monitorDingTalkProvider(
       return { handled: true, ok: true };
     }
 
-    const tokenManager = getOrCreateTokenManager(account);
+    const effectiveCardData = stream
+      ? (params.info.kind === "final" ? ensureCardFinishedStatus(card.cardData) : card.cardData)
+      : ensureCardFinishedStatus(card.cardData);
     const preferUpdate =
       card.mode === "update" ||
       Boolean(card.cardInstanceId) ||
@@ -329,7 +409,7 @@ export async function monitorDingTalkProvider(
         account,
         cardInstanceId,
         outTrackId,
-        cardData: card.cardData,
+        cardData: effectiveCardData,
         privateData: card.privateData,
         openSpace,
         openSpaceId,
@@ -376,7 +456,7 @@ export async function monitorDingTalkProvider(
         account,
         templateId,
         outTrackId,
-        cardData: card.cardData,
+        cardData: effectiveCardData,
         privateData: card.privateData,
         openSpace: openSpacePayload,
         openSpaceId: normalizedOpenSpaceId,
@@ -394,7 +474,7 @@ export async function monitorDingTalkProvider(
           account,
           templateId,
           outTrackId,
-          cardData: card.cardData,
+          cardData: effectiveCardData,
           privateData: card.privateData,
           openSpace: openSpacePayload,
           openSpaceId: normalizedOpenSpaceId,

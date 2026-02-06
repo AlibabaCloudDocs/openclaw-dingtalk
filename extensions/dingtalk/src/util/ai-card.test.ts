@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ChatbotMessage } from "../stream/types.js";
+import { BASIC_ACCOUNT } from "../../test/fixtures/configs.js";
 import {
+  buildCardDataFromText,
   deriveOpenSpaceIdFromChat,
+  ensureCardFinishedStatus,
   normalizeOpenSpaceId,
   resolveCardUserId,
 } from "./ai-card.js";
@@ -48,5 +51,29 @@ describe("ai-card util", () => {
 
     const groupChat = createChat({ chatType: "2", conversationId: "cid-group-001" });
     expect(deriveOpenSpaceIdFromChat(groupChat)).toBe("dtv1.card//IM_GROUP.cid-group-001");
+  });
+
+  it("adds flowStatus=3 when building auto card text data", () => {
+    const account = {
+      ...BASIC_ACCOUNT,
+      aiCard: {
+        ...BASIC_ACCOUNT.aiCard,
+        textParamKey: "content",
+      },
+    };
+    const data = buildCardDataFromText({ account, text: "hello" });
+    expect((data as Record<string, unknown>).content).toBe("hello");
+    expect((data as Record<string, unknown>).flowStatus).toBe("3");
+  });
+
+  it("keeps existing flowStatus when finishing card data", () => {
+    const data = ensureCardFinishedStatus({
+      cardParamMap: {
+        flowStatus: "2",
+        content: "hello",
+      },
+    }) as Record<string, unknown>;
+    const map = data.cardParamMap as Record<string, unknown>;
+    expect(map.flowStatus).toBe("2");
   });
 });

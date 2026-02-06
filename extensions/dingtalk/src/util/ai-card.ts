@@ -149,10 +149,10 @@ export function buildCardDataFromText(params: {
   const { account, text } = params;
   const key = account.aiCard.textParamKey || "text";
   const defaults = account.aiCard.defaultCardData ?? {};
-  return {
+  return ensureCardFinishedStatus({
     ...defaults,
     [key]: text,
-  };
+  });
 }
 
 export function convertJSONValuesToString(obj: Record<string, unknown>): Record<string, string> {
@@ -180,6 +180,27 @@ export function normalizeCardData(cardData: Record<string, unknown>): Record<str
     return { ...cardData, cardParamMap: convertJSONValuesToString(map ?? {}) };
   }
   return { cardParamMap: convertJSONValuesToString(cardData) };
+}
+
+export function ensureCardFinishedStatus(cardData: Record<string, unknown>): Record<string, unknown> {
+  if (!cardData || typeof cardData !== "object") {
+    return cardData;
+  }
+
+  if ("cardParamMap" in cardData) {
+    const raw = (cardData as Record<string, unknown>).cardParamMap;
+    const map = raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : {};
+    if (map.flowStatus === undefined || map.flowStatus === null || map.flowStatus === "") {
+      map.flowStatus = "3";
+    }
+    return { ...cardData, cardParamMap: map };
+  }
+
+  const map = { ...cardData };
+  if (map.flowStatus === undefined || map.flowStatus === null || map.flowStatus === "") {
+    map.flowStatus = "3";
+  }
+  return map;
 }
 
 export function normalizePrivateData(

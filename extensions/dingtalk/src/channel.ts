@@ -28,6 +28,7 @@ import type { DingTalkChannelData } from "./types/channel-data.js";
 import { createCardInstance, updateCardInstance, deliverCardInstance, createAndDeliverCardInstance } from "./api/card-instances.js";
 import {
   buildCardDataFromText,
+  ensureCardFinishedStatus,
   generateOutTrackId,
   normalizeOpenSpaceId,
   resolveOpenSpace,
@@ -456,6 +457,9 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
 
         const outTrackId = card.outTrackId ?? generateOutTrackId("card");
         const callbackType = card.callbackType ?? account.aiCard.callbackType;
+        const effectiveCardData = card.stream === true
+          ? card.cardData
+          : ensureCardFinishedStatus(card.cardData);
 
         let result;
         if (card.mode === "update" || card.cardInstanceId) {
@@ -463,7 +467,7 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
             account,
             cardInstanceId: card.cardInstanceId,
             outTrackId,
-            cardData: card.cardData,
+            cardData: effectiveCardData,
             privateData: card.privateData,
             openSpace,
             openSpaceId,
@@ -497,7 +501,7 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
             account,
             templateId,
             outTrackId,
-            cardData: card.cardData,
+            cardData: effectiveCardData,
             privateData: card.privateData,
             openSpace: openSpacePayload,
             openSpaceId,
