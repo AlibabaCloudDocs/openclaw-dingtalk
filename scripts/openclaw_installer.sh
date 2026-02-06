@@ -2424,9 +2424,8 @@ configure_channel_dingtalk() {
         return 1
     fi
 
-    printf "${ACCENT}◆${NC} 钉钉 Client Secret: " > /dev/tty
-    read -rs dingtalk_client_secret < /dev/tty || true
-    printf "\n" > /dev/tty
+    printf "${ACCENT}◆${NC} 钉钉 Client Secret（可见输入）: " > /dev/tty
+    read -r dingtalk_client_secret < /dev/tty || true
     if [[ -z "$dingtalk_client_secret" ]]; then
         echo -e "${ERROR}◆${NC} Client Secret 不能为空"
         return 1
@@ -2720,9 +2719,8 @@ configure_clawdbot_interactive() {
     dashscope_base_url=${dashscope_base_url:-https://coding.dashscope.aliyuncs.com/v1}
 
     local dashscope_api_key=""
-    printf "${ACCENT}◆${NC} 百炼 API Key: " > /dev/tty
-    read -rs dashscope_api_key < /dev/tty || true
-    printf "\n" > /dev/tty
+    printf "${ACCENT}◆${NC} 百炼 API Key（可见输入）: " > /dev/tty
+    read -r dashscope_api_key < /dev/tty || true
     if [[ -z "$dashscope_api_key" ]]; then
         echo -e "${ERROR}◆${NC} API Key 不能为空"
         return 1
@@ -3285,17 +3283,62 @@ expand_home_path() {
     return 0
 }
 
+resolve_npm_global_package_dir() {
+    local pkg="$1"
+    if [[ -z "$pkg" ]] || ! command -v npm &>/dev/null; then
+        return 1
+    fi
+
+    local npm_root=""
+    npm_root="$(npm root -g 2>/dev/null || true)"
+    if [[ -z "$npm_root" ]]; then
+        return 1
+    fi
+
+    local candidate="${npm_root%/}/${pkg}"
+    if [[ -d "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+    fi
+    return 1
+}
+
 resolve_dingtalk_workspace_template_dir() {
+    local env_dir="${DINGTALK_WORKSPACE_TEMPLATE_DIR:-}"
+    if [[ -n "$env_dir" ]]; then
+        env_dir="$(expand_home_path "$env_dir")"
+        if [[ -d "$env_dir" ]]; then
+            echo "$env_dir"
+            return 0
+        fi
+    fi
+
+    local package_dir=""
+    package_dir="$(resolve_npm_global_package_dir "$CHANNEL_PKG_DINGTALK" || true)"
+    if [[ -n "$package_dir" ]]; then
+        local packaged_candidate="${package_dir%/}/workspace-templates"
+        if [[ -d "$packaged_candidate" ]]; then
+            echo "$packaged_candidate"
+            return 0
+        fi
+    fi
+
     local script_dir=""
     script_dir="$(resolve_installer_script_dir || true)"
     if [[ -z "$script_dir" ]]; then
         return 1
     fi
-    local candidate="${script_dir}/extensions/dingtalk/workspace-templates"
-    if [[ -d "$candidate" ]]; then
-        echo "$candidate"
-        return 0
-    fi
+    local candidates=(
+        "${script_dir}/../extensions/dingtalk/workspace-templates"
+        "${script_dir}/extensions/dingtalk/workspace-templates"
+    )
+    local candidate=""
+    for candidate in "${candidates[@]}"; do
+        if [[ -d "$candidate" ]]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
     return 1
 }
 
@@ -3339,8 +3382,8 @@ seed_dingtalk_workspace_templates_if_missing() {
     local template_dir=""
     template_dir="$(resolve_dingtalk_workspace_template_dir || true)"
     if [[ -z "$template_dir" ]]; then
-        log warn "DingTalk workspace templates not found beside installer; skip seeding"
-        echo -e "${WARN}→${NC} 未找到 DingTalk workspace 模板目录，跳过初始化。"
+        log warn "DingTalk workspace templates not found in package/local source; skip seeding"
+        echo -e "${WARN}→${NC} 未找到 DingTalk workspace 模板目录（npm 包或本地源码），跳过初始化。"
         return 0
     fi
 
