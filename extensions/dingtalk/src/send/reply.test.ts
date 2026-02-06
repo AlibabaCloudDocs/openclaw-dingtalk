@@ -52,6 +52,24 @@ describe("sendReplyViaSessionWebhook", () => {
     expect(body.markdown.text).toContain("# Title");
   });
 
+  it("normalizes single line breaks to markdown hard breaks", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({}),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await sendReplyViaSessionWebhook(
+      "https://oapi.dingtalk.com/robot/sendBySession?session=xxx",
+      "第一行\n第二行",
+      { replyMode: "markdown" }
+    );
+
+    expect(result.ok).toBe(true);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.markdown.text).toBe("第一行  \n第二行");
+  });
+
   it("chunks long messages", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,

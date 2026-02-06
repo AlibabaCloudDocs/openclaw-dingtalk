@@ -57,7 +57,7 @@ export async function sendReplyViaSessionWebhook(
   }
 
   let processedText = text;
-  if (replyMode === "markdown" && tableMode !== "off") {
+  if (replyMode === "markdown") {
     processedText = convertMarkdownForDingTalk(processedText, { tableMode });
   }
 

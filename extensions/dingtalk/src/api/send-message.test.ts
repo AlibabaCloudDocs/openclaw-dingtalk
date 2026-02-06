@@ -129,6 +129,32 @@ describe("sendProactiveMessage", () => {
     expect(JSON.parse(body.msgParam).title).toBe("Clawdbot");
   });
 
+  it("normalizes markdown single line breaks before proactive send", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ accessToken: "test-token", expireIn: 7200 }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ processQueryKey: "md-query" }),
+      });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await sendProactiveMessage({
+      account: MARKDOWN_ACCOUNT,
+      to: "user:testUser",
+      text: "第一行\n第二行",
+      replyMode: "markdown",
+    });
+
+    expect(result.ok).toBe(true);
+    const messageCall = mockFetch.mock.calls[1];
+    const body = JSON.parse(messageCall[1].body);
+    const msgParam = JSON.parse(body.msgParam);
+    expect(msgParam.text).toBe("第一行  \n第二行");
+  });
+
   it("chunks long messages", async () => {
     const mockFetch = vi.fn()
       .mockResolvedValueOnce({

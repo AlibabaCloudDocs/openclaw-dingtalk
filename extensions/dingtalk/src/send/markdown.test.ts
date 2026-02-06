@@ -45,16 +45,19 @@ Table 2:
   it("does not modify text without tables", () => {
     const input = "Just some regular text\nWith multiple lines\n\nAnd paragraphs.";
     const result = convertMarkdownForDingTalk(input);
-    expect(result).toBe(input);
+    expect(result).toBe("Just some regular text  \nWith multiple lines\n\nAnd paragraphs.");
   });
 
-  it("returns input unchanged when tableMode is off", () => {
+  it("keeps tables unwrapped when tableMode is off", () => {
     const input = `| A | B |
 |---|---|
 | 1 | 2 |`;
 
     const result = convertMarkdownForDingTalk(input, { tableMode: "off" });
-    expect(result).toBe(input);
+    expect(result).not.toContain("```");
+    expect(result).toBe(`| A | B |  
+|---|---|  
+| 1 | 2 |`);
   });
 
   it("handles table at end of text", () => {
@@ -91,5 +94,20 @@ Some text`;
 
   it("handles empty input", () => {
     expect(convertMarkdownForDingTalk("")).toBe("");
+  });
+
+  it("preserves fenced code blocks while normalizing outer line breaks", () => {
+    const input = `第一行
+\`\`\`js
+const a = 1;
+const b = 2;
+\`\`\`
+第二行`;
+
+    const result = convertMarkdownForDingTalk(input);
+
+    expect(result).toContain("第一行  \n```js");
+    expect(result).toContain("const a = 1;\nconst b = 2;");
+    expect(result).not.toContain("const a = 1;  \n");
   });
 });

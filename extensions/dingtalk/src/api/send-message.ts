@@ -326,7 +326,7 @@ export async function sendProactiveMessage(
 
   // Process text (markdown conversion if needed)
   let processedText = text;
-  if (replyMode === "markdown" && account.tableMode !== "off") {
+  if (replyMode === "markdown") {
     processedText = convertMarkdownForDingTalk(processedText, {
       tableMode: account.tableMode,
     });
@@ -416,7 +416,7 @@ export async function sendBatchDirectMessage(opts: {
 
   // Process text
   let processedText = text;
-  if (replyMode === "markdown" && account.tableMode !== "off") {
+  if (replyMode === "markdown") {
     processedText = convertMarkdownForDingTalk(processedText, {
       tableMode: account.tableMode,
     });
