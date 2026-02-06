@@ -2614,7 +2614,29 @@ generate_plugin_entry() {
         return
     fi
 
-    echo "      \"$pkg\": { \"enabled\": true }"
+    case "$channel" in
+        dingtalk)
+            cat <<EOF
+      "$pkg": {
+        "enabled": true,
+        "config": {
+          "aliyunMcp": {
+            "timeoutSeconds": 60,
+            "tools": {
+              "webSearch": { "enabled": false },
+              "codeInterpreter": { "enabled": false },
+              "webParser": { "enabled": false },
+              "wan26Media": { "enabled": false, "autoSendToDingtalk": true }
+            }
+          }
+        }
+      }
+EOF
+            ;;
+        *)
+            echo "      \"$pkg\": { \"enabled\": true }"
+            ;;
+    esac
 }
 
 # Main interactive configuration function
@@ -2784,6 +2806,13 @@ ${full_channels_block}
           { "id": "qwen3-max-2026-01-23", "name": "Qwen3 Max Thinking", "contextWindow": 262144, "maxTokens": 32768, "reasoning": true, "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false } },
           { "id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus", "contextWindow": 1000000, "maxTokens": 65536 }
         ]
+      }
+    }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": false
       }
     }
   },
@@ -4355,6 +4384,13 @@ config_add_channel() {
             config_set "channels.clawdbot-dingtalk.clientId" "\"${CHANNEL_DINGTALK_CLIENT_ID}\""
             config_set "channels.clawdbot-dingtalk.clientSecret" "\"${CHANNEL_DINGTALK_CLIENT_SECRET}\""
             config_set "plugins.entries.clawdbot-dingtalk.enabled" "true"
+            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.timeoutSeconds" "60"
+            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.webSearch.enabled" "false"
+            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.codeInterpreter.enabled" "false"
+            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.webParser.enabled" "false"
+            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.wan26Media.enabled" "false"
+            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.wan26Media.autoSendToDingtalk" "true"
+            config_set "tools.web.search.enabled" "false"
             ;;
     esac
 

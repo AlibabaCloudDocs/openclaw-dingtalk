@@ -30,14 +30,32 @@ clawdbot gateway
 
 编辑 `~/.clawdbot/clawdbot.json`:
 
-> Plugin ID：`dingtalk`（用于 `plugins.allow` / `plugins.entries`）  
+> Plugin ID：`clawdbot-dingtalk`（用于 `plugins.allow` / `plugins.entries`）  
 > NPM 包名：`clawdbot-dingtalk`
 
 ```json
 {
   "extensions": ["clawdbot-dingtalk"],
+  "plugins": {
+    "entries": {
+      "clawdbot-dingtalk": {
+        "enabled": true,
+        "config": {
+          "aliyunMcp": {
+            "timeoutSeconds": 60,
+            "tools": {
+              "webSearch": { "enabled": false },
+              "codeInterpreter": { "enabled": false },
+              "webParser": { "enabled": false },
+              "wan26Media": { "enabled": false, "autoSendToDingtalk": true }
+            }
+          }
+        }
+      }
+    }
+  },
   "channels": {
-    "dingtalk": {
+    "clawdbot-dingtalk": {
       "enabled": true,
       "clientId": "你的钉钉 Client ID",
       "clientSecret": "你的钉钉 Client Secret"
@@ -64,11 +82,33 @@ clawdbot gateway
         "dashscope/qwen3-coder-plus": {}
       }
     }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": false
+      }
+    }
   }
 }
 ```
 
 提示：DashScope 思考模式使用 OpenClaw 原生 `/think` 指令开启，无需代理。
+
+### 百炼 MCP 内置工具（可选）
+
+钉钉插件内置了 4 个可独立开关的百炼 MCP 工具（默认全关）：
+
+- `web_search` -> WebSearch
+- `aliyun_code_interpreter` -> code_interpreter_mcp
+- `aliyun_web_parser` -> WebParser
+- `aliyun_wan26_media` -> Wan26Media（可自动回传到当前钉钉会话）
+
+API Key 优先级：
+
+1. `DASHSCOPE_MCP_<TOOL>_API_KEY`
+2. `DASHSCOPE_API_KEY`
+3. `plugins.entries.clawdbot-dingtalk.config.aliyunMcp.apiKey`
 
 ## 生产环境部署
 
@@ -153,7 +193,7 @@ nohup clawdbot gateway > ~/clawdbot.log 2>&1 &
 ```json
 {
   "channels": {
-    "dingtalk": {
+    "clawdbot-dingtalk": {
       "accounts": {
         "support": {
           "enabled": true,

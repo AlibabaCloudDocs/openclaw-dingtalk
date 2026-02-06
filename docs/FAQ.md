@@ -375,6 +375,61 @@ curl -s ifconfig.me
 
 ---
 
+### Q: 为什么没有 `web_search` / 百炼 MCP 工具？
+
+钉钉插件内置的 4 个百炼 MCP 工具都带独立开关，且默认值是 **全关**：
+
+- `plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.webSearch.enabled`
+- `plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.codeInterpreter.enabled`
+- `plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.webParser.enabled`
+- `plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.wan26Media.enabled`
+
+同时，安装器默认会把 `tools.web.search.enabled` 设为 `false`（关闭 core Brave 搜索）。
+
+这意味着：
+- 如果你没打开插件里的 `webSearch`，系统就不会有任何 `web_search` 工具。
+- 这属于预期行为，不会自动回退 Brave。
+
+可用最小配置示例：
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "clawdbot-dingtalk": {
+        "enabled": true,
+        "config": {
+          "aliyunMcp": {
+            "timeoutSeconds": 60,
+            "tools": {
+              "webSearch": { "enabled": true },
+              "codeInterpreter": { "enabled": false },
+              "webParser": { "enabled": false },
+              "wan26Media": { "enabled": false, "autoSendToDingtalk": true }
+            }
+          }
+        }
+      }
+    }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": false
+      }
+    }
+  }
+}
+```
+
+API Key 优先级（高 -> 低）：
+
+1. `DASHSCOPE_MCP_<TOOL>_API_KEY`
+2. `DASHSCOPE_API_KEY`
+3. `plugins.entries.clawdbot-dingtalk.config.aliyunMcp.apiKey`
+
+---
+
 ### Q: 一个人怎么获取钉钉开发者权限？
 
 **个人开发者**：

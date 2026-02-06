@@ -9,6 +9,114 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "aliyunMcp": {
+        "type": "object",
+        "additionalProperties": false,
+        "title": "阿里云百炼 MCP",
+        "description": "四个内置 MCP 默认关闭。启用前请先在百炼控制台完成开通。MCP 广场：https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market",
+        "properties": {
+          "apiKey": {
+            "type": "string",
+            "title": "DASHSCOPE API Key",
+            "description": "可选。未单独配置工具 API Key 时，作为四个 MCP 的兜底鉴权。"
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "minimum": 1,
+            "default": 60,
+            "title": "MCP 超时时间（秒）"
+          },
+          "tools": {
+            "type": "object",
+            "additionalProperties": false,
+            "title": "工具开关",
+            "properties": {
+              "webSearch": {
+                "type": "object",
+                "additionalProperties": false,
+                "title": "联网搜索（WebSearch）",
+                "description": "开通提醒：启用前请先在百炼控制台开通“联网搜索”MCP。详情：https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/WebSearch",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "title": "启用联网搜索",
+                    "description": "未开通时启用会调用失败。开通入口：https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/WebSearch"
+                  },
+                  "endpoint": {
+                    "type": "string",
+                    "default": "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/sse",
+                    "title": "服务地址"
+                  }
+                }
+              },
+              "codeInterpreter": {
+                "type": "object",
+                "additionalProperties": false,
+                "title": "代码解释器（code_interpreter_mcp）",
+                "description": "开通提醒：启用前请先在百炼控制台开通“代码解释器”MCP。详情：https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/code_interpreter_mcp",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "title": "启用代码解释器",
+                    "description": "未开通时启用会调用失败。开通入口：https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/code_interpreter_mcp"
+                  },
+                  "endpoint": {
+                    "type": "string",
+                    "default": "https://dashscope.aliyuncs.com/api/v1/mcps/code_interpreter_mcp/mcp",
+                    "title": "服务地址"
+                  }
+                }
+              },
+              "webParser": {
+                "type": "object",
+                "additionalProperties": false,
+                "title": "网页解析（WebParser）",
+                "description": "开通提醒：启用前请先在百炼控制台开通“网页解析”MCP。详情：https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/WebParser",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "title": "启用网页解析",
+                    "description": "未开通时启用会调用失败。开通入口：https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/WebParser"
+                  },
+                  "endpoint": {
+                    "type": "string",
+                    "default": "https://dashscope.aliyuncs.com/api/v1/mcps/WebParser/sse",
+                    "title": "服务地址"
+                  }
+                }
+              },
+              "wan26Media": {
+                "type": "object",
+                "additionalProperties": false,
+                "title": "通义万相2.6（Wan26Media）",
+                "description": "开通提醒：启用前请先在百炼控制台开通“通义万相2.6-图像视频生成”MCP。详情：https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/Wan26Media",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "title": "启用万相2.6 图像/视频生成",
+                    "description": "未开通时启用会调用失败。开通入口：https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/Wan26Media"
+                  },
+                  "endpoint": {
+                    "type": "string",
+                    "default": "https://dashscope.aliyuncs.com/api/v1/mcps/Wan26Media/sse",
+                    "title": "服务地址"
+                  },
+                  "autoSendToDingtalk": {
+                    "type": "boolean",
+                    "default": true,
+                    "title": "自动回传到钉钉会话"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
