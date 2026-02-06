@@ -2,7 +2,11 @@
  * Tests for directive tags stripping utilities.
  */
 import { describe, it, expect } from "vitest";
-import { stripDirectiveTags, isOnlyDirectiveTags } from "./directive-tags.js";
+import {
+  stripDirectiveTags,
+  stripDirectiveTagsPreserveFormatting,
+  isOnlyDirectiveTags,
+} from "./directive-tags.js";
 
 describe("stripDirectiveTags", () => {
   it("removes [[audio_as_voice]] tag", () => {
@@ -52,6 +56,18 @@ describe("stripDirectiveTags", () => {
   it("handles case insensitive matching", () => {
     const input = "[[AUDIO_AS_VOICE]] [[Reply_To_Current]]";
     expect(stripDirectiveTags(input)).toBe("");
+  });
+});
+
+describe("stripDirectiveTagsPreserveFormatting", () => {
+  it("preserves newline while removing directive tag", () => {
+    const input = "[[reply_to_current]]\n第二行";
+    expect(stripDirectiveTagsPreserveFormatting(input)).toBe("\n第二行");
+  });
+
+  it("preserves newline-only chunk after tag removal", () => {
+    const input = "[[audio_as_voice]]\n";
+    expect(stripDirectiveTagsPreserveFormatting(input)).toBe("\n");
   });
 });
 

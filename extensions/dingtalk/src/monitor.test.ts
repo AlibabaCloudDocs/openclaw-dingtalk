@@ -742,6 +742,86 @@ describe("monitorDingTalkProvider", () => {
     );
   });
 
+  it("preserves newline formatting in AI card streaming and finalization", async () => {
+    const runtime = getDingTalkRuntime();
+    const aiCardAccount = {
+      ...BASIC_ACCOUNT,
+      aiCard: {
+        ...BASIC_ACCOUNT.aiCard,
+        enabled: true,
+        autoReply: true,
+        templateId: "tpl-1",
+        updateThrottleMs: 0,
+      },
+    };
+
+    mockFetch.mockImplementation(async (url: string, init: RequestInit) => {
+      if (url.includes("/v1.0/card/instances") && init?.method === "POST" && !url.includes("/deliver")) {
+        return {
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ cardInstanceId: "card-1" })),
+        } as any;
+      }
+      return {
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ success: true })),
+        json: () => Promise.resolve({ success: true }),
+      } as any;
+    });
+
+    await monitorDingTalkProvider({
+      account: aiCardAccount,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage({ conversationType: "1" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const call = (runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>).mock.calls[0];
+    const dispatcherOptions = call?.[0]?.dispatcherOptions;
+
+    await dispatcherOptions.deliver(
+      { text: "第一行\n" },
+      { kind: "block" }
+    );
+    await dispatcherOptions.deliver(
+      { text: "\n第二行" },
+      { kind: "block" }
+    );
+    await dispatcherOptions.deliver(
+      { text: "第一行\n\n第二行" },
+      { kind: "final" }
+    );
+
+    const streamingCalls = mockFetch.mock.calls.filter((entry) =>
+      String(entry[0]).includes("/v1.0/card/streaming")
+    );
+    expect(streamingCalls.length).toBeGreaterThanOrEqual(3);
+
+    const firstBody = JSON.parse(streamingCalls[0][1].body as string);
+    expect(firstBody.content).toBe("第一行\n");
+
+    const secondBody = JSON.parse(streamingCalls[1][1].body as string);
+    expect(secondBody.content).toBe("第一行\n\n第二行");
+    expect(secondBody.isFinalize).toBe(false);
+
+    const finalBody = JSON.parse(streamingCalls[streamingCalls.length - 1][1].body as string);
+    expect(finalBody.content).toBe("第一行\n\n第二行");
+    expect(finalBody.isFinalize).toBe(true);
+
+    const instancePutCalls = mockFetch.mock.calls.filter(
+      (entry) =>
+        String(entry[0]).endsWith("/v1.0/card/instances") &&
+        String((entry[1] as RequestInit)?.method ?? "") === "PUT"
+    );
+    const statuses = instancePutCalls.map((entry) => {
+      const body = JSON.parse((entry[1] as RequestInit).body as string);
+      return body.cardData?.cardParamMap?.flowStatus;
+    });
+    expect(statuses).toContain("3");
+  });
+
   it("auto-finalizes AI card when dispatch has block-only replies and no final payload", async () => {
     const runtime = getDingTalkRuntime();
     const aiCardAccount = {
@@ -777,7 +857,7 @@ describe("monitorDingTalkProvider", () => {
     const dispatchMock =
       runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
     dispatchMock.mockImplementationOnce(async (params: any) => {
-      await params.dispatcherOptions.deliver({ text: "你好" }, { kind: "block" });
+      await params.dispatcherOptions.deliver({ text: "第一行\n第二行" }, { kind: "block" });
       return { queuedFinal: false, counts: { tool: 0, block: 1, final: 0 } };
     });
 
@@ -794,6 +874,13 @@ describe("monitorDingTalkProvider", () => {
       return body.isFinalize === true;
     });
     expect(hasFinalize).toBe(true);
+    const finalizeCall = streamingCalls.find((entry) => {
+      const body = JSON.parse(entry[1].body as string);
+      return body.isFinalize === true;
+    });
+    expect(finalizeCall).toBeDefined();
+    const finalizeBody = JSON.parse((finalizeCall![1] as RequestInit).body as string);
+    expect(finalizeBody.content).toBe("第一行\n第二行");
 
     const instancePutCalls = mockFetch.mock.calls.filter(
       (entry) =>

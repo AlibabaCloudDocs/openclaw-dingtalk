@@ -14,6 +14,14 @@ const REPLY_TAG_RE = /\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]
 // 匹配其他可能的控制标记 [[...]]
 const GENERIC_TAG_RE = /\[\[\s*[a-z_]+(?:\s*:\s*[^\]\n]*)?\s*\]\]/gi;
 
+function stripDirectiveTagsRaw(text: string, replacement: string): string {
+  let cleaned = text;
+  cleaned = cleaned.replace(AUDIO_TAG_RE, replacement);
+  cleaned = cleaned.replace(REPLY_TAG_RE, replacement);
+  cleaned = cleaned.replace(GENERIC_TAG_RE, replacement);
+  return cleaned;
+}
+
 /**
  * 规范化空白字符
  */
@@ -32,18 +40,18 @@ function normalizeWhitespace(text: string): string {
 export function stripDirectiveTags(text: string): string {
   if (!text) return "";
 
-  let cleaned = text;
-
-  // 移除 audio 标记
-  cleaned = cleaned.replace(AUDIO_TAG_RE, " ");
-
-  // 移除 reply 标记
-  cleaned = cleaned.replace(REPLY_TAG_RE, " ");
-
-  // 移除其他 [[...]] 格式的标记（作为兜底）
-  cleaned = cleaned.replace(GENERIC_TAG_RE, " ");
+  const cleaned = stripDirectiveTagsRaw(text, " ");
 
   return normalizeWhitespace(cleaned);
+}
+
+/**
+ * 清理文本中的指令标记，但保留原始换行与空白结构。
+ * 仅用于需要严格保留格式的场景（如 AI 卡片流式正文）。
+ */
+export function stripDirectiveTagsPreserveFormatting(text: string): string {
+  if (!text) return "";
+  return stripDirectiveTagsRaw(text, "");
 }
 
 /**

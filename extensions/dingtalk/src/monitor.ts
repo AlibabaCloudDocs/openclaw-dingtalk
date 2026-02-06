@@ -17,7 +17,11 @@ import type { ChatbotMessage, StreamClientHandle, StreamLogger, CardCallbackMess
 import { buildSessionKey, startsWithPrefix } from "./stream/message-parser.js";
 import { sendReplyViaSessionWebhook, sendImageViaSessionWebhook, sendImageWithMediaIdViaSessionWebhook } from "./send/reply.js";
 import { convertMarkdownForDingTalk } from "./send/markdown.js";
-import { stripDirectiveTags, isOnlyDirectiveTags } from "./util/directive-tags.js";
+import {
+  stripDirectiveTags,
+  stripDirectiveTagsPreserveFormatting,
+  isOnlyDirectiveTags,
+} from "./util/directive-tags.js";
 import { applyResponsePrefix, isGroupChatType, shouldEnforcePrefix } from "./util/prefix.js";
 import { DINGTALK_CHANNEL_ID } from "./config-schema.js";
 import { downloadMedia, uploadMedia } from "./api/media.js";
@@ -345,23 +349,26 @@ export async function monitorDingTalkProvider(
     }
 
     const normalizeTextForCard = (text?: string): string => {
-      const trimmed = text?.trim() ?? "";
-      if (!trimmed) return "";
-      if (isOnlyDirectiveTags(trimmed)) return "";
-      const stripped = stripDirectiveTags(trimmed);
-      return (stripped ?? "").trim();
+      const raw = text ?? "";
+      if (!raw) return "";
+      if (isOnlyDirectiveTags(raw)) return "";
+      const stripped = stripDirectiveTagsPreserveFormatting(raw);
+      if (!stripped.trim() && !stripped.includes("\n")) return "";
+      return stripped;
     };
 
-    const mergeAccumulatedText = (previous: string, next: string, final: boolean): string => {
+    const mergeAccumulatedText = (previous: string, next: string): string => {
       if (!next) return previous;
       if (!previous) return next;
-      if (final) {
-        if (next.startsWith(previous)) return next;
-        if (previous.startsWith(next)) return previous;
-        if (next.includes(previous)) return next;
-        if (previous.includes(next)) return previous;
-      }
-      if (previous.endsWith(next)) return previous;
+
+      const newlineOnlyChunk = next.trim().length === 0 && next.includes("\n");
+      if (next.startsWith(previous)) return next;
+      if (previous.startsWith(next) && !newlineOnlyChunk) return previous;
+      if (next.endsWith(previous)) return next;
+      if (previous.endsWith(next) && !newlineOnlyChunk) return previous;
+      if (next.includes(previous)) return next;
+      if (previous.includes(next) && !newlineOnlyChunk) return previous;
+
       return `${previous}${next}`;
     };
 
@@ -477,8 +484,18 @@ export async function monitorDingTalkProvider(
       "msgContent";
     const mergedText = mergeAccumulatedText(
       previousState?.accumulatedText ?? "",
-      cardText,
-      isFinal
+      cardText
+    );
+    log?.debug?.(
+      {
+        sessionKey: params.sessionKey,
+        outTrackId,
+        kind: params.info.kind,
+        chunkLen: cardText.length,
+        chunkHasNewline: cardText.includes("\n"),
+        accumulatedLen: mergedText.length,
+      },
+      "AI card text chunk processed"
     );
     const defaultFinalText = mediaSentCount > 0 ? "✅ 媒体已发送" : "";
 
