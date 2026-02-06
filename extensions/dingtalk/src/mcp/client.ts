@@ -19,7 +19,7 @@ type CachedMcpClient = {
   transport: McpTransport;
   protocol: McpProtocol;
   endpoint: string;
-  resolvedToolNames: Partial<Record<AliyunMcpToolId, string>>;
+  resolvedToolNames: Record<string, string>;
   availableToolNames: string[];
 };
 
@@ -60,9 +60,266 @@ function normalizeName(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function selectRemoteToolName(toolId: AliyunMcpToolId, availableNames: string[]): string {
+export type Wan26Intent = "image" | "video" | "task_status";
+
+const WAN26_IMAGE_WORDS = /(image|photo|picture|illustration|draw|poster|wallpaper|头像|配图|海报|插画|画|图片|照片|生成图)/i;
+const WAN26_VIDEO_WORDS = /(video|movie|clip|animation|text_to_video|image_to_video|短片|视频|动图|动画)/i;
+const WAN26_STATUS_WORDS = /(status|fetch|poll|query|result|task_status|task_result|任务状态|查询任务|拉取结果)/i;
+
+const WAN26_INTENT_HINTS: Record<Wan26Intent, { include: string[]; avoid: string[] }> = {
+  image: {
+    include: [
+      "image_generation",
+      "text_to_image",
+      "wanx26_image",
+      "wanx2.6_image",
+      "image",
+      "wanx",
+    ],
+    avoid: ["text_to_video", "image_to_video", "video", "fetch_task", "task_status", "query_task"],
+  },
+  video: {
+    include: ["text_to_video", "image_to_video", "video_generation", "video", "wan26_video"],
+    avoid: ["text_to_image", "image_generation", "fetch_task", "task_status", "query_task"],
+  },
+  task_status: {
+    include: ["fetch_task", "query_task", "task_status", "task_result", "get_result", "status", "result"],
+    avoid: ["text_to_video", "image_to_video", "text_to_image", "image_generation"],
+  },
+};
+
+function readString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function collectStrings(value: unknown, out: string[], depth = 0): void {
+  if (depth > 4 || out.length >= 50) {
+    return;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) {
+      out.push(trimmed);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectStrings(item, out, depth + 1);
+      if (out.length >= 50) {
+        return;
+      }
+    }
+    return;
+  }
+  if (!value || typeof value !== "object") {
+    return;
+  }
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    collectStrings(child, out, depth + 1);
+    if (out.length >= 50) {
+      return;
+    }
+  }
+}
+
+function parseWan26Intent(value: string | undefined): Wan26Intent | undefined {
+  const normalized = normalizeName(value ?? "");
+  if (!normalized) {
+    return undefined;
+  }
+  if (
+    normalized === "image" ||
+    normalized === "img" ||
+    normalized === "photo" ||
+    normalized === "picture" ||
+    normalized === "text_to_image"
+  ) {
+    return "image";
+  }
+  if (
+    normalized === "video" ||
+    normalized === "movie" ||
+    normalized === "clip" ||
+    normalized === "text_to_video" ||
+    normalized === "image_to_video"
+  ) {
+    return "video";
+  }
+  if (
+    normalized === "status" ||
+    normalized === "task_status" ||
+    normalized === "fetch" ||
+    normalized === "fetch_task" ||
+    normalized === "query" ||
+    normalized === "result"
+  ) {
+    return "task_status";
+  }
+  if (WAN26_IMAGE_WORDS.test(normalized) && !WAN26_VIDEO_WORDS.test(normalized)) {
+    return "image";
+  }
+  if (WAN26_VIDEO_WORDS.test(normalized) && !WAN26_IMAGE_WORDS.test(normalized)) {
+    return "video";
+  }
+  if (WAN26_STATUS_WORDS.test(normalized)) {
+    return "task_status";
+  }
+  return undefined;
+}
+
+function scoreByHint(name: string, include: string[], avoid: string[]): number {
+  const normalized = normalizeName(name);
+  let score = 0;
+  for (const keyword of include) {
+    if (normalized.includes(keyword)) {
+      score += 3;
+    }
+  }
+  for (const keyword of avoid) {
+    if (normalized.includes(keyword)) {
+      score -= 4;
+    }
+  }
+  return score;
+}
+
+function resolveExplicitRemoteToolName(
+  availableNames: string[],
+  preferredRemoteToolName?: string,
+): string | undefined {
+  const explicit = readString(preferredRemoteToolName);
+  if (!explicit) {
+    return undefined;
+  }
+  const normalizedExplicit = normalizeName(explicit);
+  const byNormalized = new Map<string, string>();
+  for (const name of availableNames) {
+    byNormalized.set(normalizeName(name), name);
+  }
+  const exact = byNormalized.get(normalizedExplicit);
+  if (exact) {
+    return exact;
+  }
+  return availableNames.find((name) => normalizeName(name).includes(normalizedExplicit));
+}
+
+export function detectWan26Intent(params: {
+  arguments: Record<string, unknown>;
+  preferredRemoteToolName?: string;
+}): Wan26Intent {
+  const explicitIntent = parseWan26Intent(
+    readString(params.arguments.mode) ??
+      readString(params.arguments.intent) ??
+      readString(params.arguments.mediaType) ??
+      readString(params.arguments.taskType),
+  );
+  if (explicitIntent) {
+    return explicitIntent;
+  }
+
+  const explicitToolIntent = parseWan26Intent(params.preferredRemoteToolName);
+  if (explicitToolIntent) {
+    return explicitToolIntent;
+  }
+
+  const taskId = readString(params.arguments.task_id) ?? readString(params.arguments.taskId);
+  const prompt = readString(params.arguments.prompt);
+  if (taskId && !prompt) {
+    return "task_status";
+  }
+
+  const fragments: string[] = [];
+  collectStrings(params.arguments, fragments);
+  const joined = fragments.join(" ");
+  const hasVideo = WAN26_VIDEO_WORDS.test(joined);
+  const hasImage = WAN26_IMAGE_WORDS.test(joined);
+  const hasStatus = WAN26_STATUS_WORDS.test(joined);
+  if (hasStatus && !hasImage && !hasVideo) {
+    return "task_status";
+  }
+  if (hasVideo && !hasImage) {
+    return "video";
+  }
+  if (hasImage && !hasVideo) {
+    return "image";
+  }
+  if (hasVideo) {
+    return "video";
+  }
+  return "image";
+}
+
+export function selectWan26RemoteToolName(params: {
+  availableNames: string[];
+  preferredRemoteToolName?: string;
+  intent: Wan26Intent;
+}): string | undefined {
+  const explicit = resolveExplicitRemoteToolName(params.availableNames, params.preferredRemoteToolName);
+  if (explicit) {
+    return explicit;
+  }
+
+  const hints = WAN26_INTENT_HINTS[params.intent];
+  let bestName: string | undefined;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (const name of params.availableNames) {
+    const score = scoreByHint(name, hints.include, hints.avoid);
+    if (score > bestScore) {
+      bestScore = score;
+      bestName = name;
+    }
+  }
+  if (bestName && bestScore > 0) {
+    return bestName;
+  }
+  return undefined;
+}
+
+function buildSelectionCacheKey(params: {
+  toolId: AliyunMcpToolId;
+  selectionArguments?: Record<string, unknown>;
+  preferredRemoteToolName?: string;
+}): string {
+  if (params.toolId !== "wan26Media") {
+    return `${params.toolId}:default`;
+  }
+  const intent = detectWan26Intent({
+    arguments: params.selectionArguments ?? {},
+    preferredRemoteToolName: params.preferredRemoteToolName,
+  });
+  const preferred = normalizeName(params.preferredRemoteToolName ?? "");
+  return `${params.toolId}:intent=${intent}:preferred=${preferred || "-"}`;
+}
+
+function selectRemoteToolName(params: {
+  toolId: AliyunMcpToolId;
+  availableNames: string[];
+  selectionArguments?: Record<string, unknown>;
+  preferredRemoteToolName?: string;
+}): string {
+  const { toolId, availableNames } = params;
   if (availableNames.length === 0) {
     throw new Error("MCP server reported no tools");
+  }
+
+  if (toolId === "wan26Media") {
+    const wan26Intent = detectWan26Intent({
+      arguments: params.selectionArguments ?? {},
+      preferredRemoteToolName: params.preferredRemoteToolName,
+    });
+    const preferred = selectWan26RemoteToolName({
+      availableNames,
+      intent: wan26Intent,
+      preferredRemoteToolName: params.preferredRemoteToolName,
+    });
+    if (preferred) {
+      return preferred;
+    }
   }
 
   const byNormalized = new Map<string, string>();
@@ -199,8 +456,15 @@ async function resolveRemoteToolName(params: {
   bundle: CachedMcpClient;
   toolId: AliyunMcpToolId;
   timeoutSeconds: number;
+  selectionArguments?: Record<string, unknown>;
+  preferredRemoteToolName?: string;
 }): Promise<string> {
-  const existing = params.bundle.resolvedToolNames[params.toolId];
+  const selectionKey = buildSelectionCacheKey({
+    toolId: params.toolId,
+    selectionArguments: params.selectionArguments,
+    preferredRemoteToolName: params.preferredRemoteToolName,
+  });
+  const existing = params.bundle.resolvedToolNames[selectionKey];
   if (existing) {
     return existing;
   }
@@ -215,8 +479,13 @@ async function resolveRemoteToolName(params: {
     .map((tool) => (typeof tool.name === "string" ? tool.name.trim() : ""))
     .filter(Boolean);
   params.bundle.availableToolNames = availableNames;
-  const selected = selectRemoteToolName(params.toolId, availableNames);
-  params.bundle.resolvedToolNames[params.toolId] = selected;
+  const selected = selectRemoteToolName({
+    toolId: params.toolId,
+    availableNames,
+    selectionArguments: params.selectionArguments,
+    preferredRemoteToolName: params.preferredRemoteToolName,
+  });
+  params.bundle.resolvedToolNames[selectionKey] = selected;
   return selected;
 }
 
@@ -243,6 +512,8 @@ export async function invokeAliyunMcpTool(params: {
   apiKey: string;
   timeoutSeconds: number;
   arguments: Record<string, unknown>;
+  selectionArguments?: Record<string, unknown>;
+  preferredRemoteToolName?: string;
   logger?: LoggerLike;
 }): Promise<McpToolInvokeResponse> {
   const bundle = await getOrCreateMcpClient({
@@ -257,6 +528,8 @@ export async function invokeAliyunMcpTool(params: {
       bundle,
       toolId: params.toolId,
       timeoutSeconds: params.timeoutSeconds,
+      selectionArguments: params.selectionArguments ?? params.arguments,
+      preferredRemoteToolName: params.preferredRemoteToolName,
     });
     const result = await withTimeout(
       bundle.client.callTool(

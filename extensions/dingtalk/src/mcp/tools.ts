@@ -89,6 +89,45 @@ const WebSearchSchema = Type.Object(
   { additionalProperties: true },
 );
 
+const Wan26Schema = Type.Object(
+  {
+    mode: Type.Optional(
+      Type.Union([
+        Type.Literal("image"),
+        Type.Literal("video"),
+        Type.Literal("task_status"),
+      ]),
+    ),
+    prompt: Type.Optional(Type.String({ description: "Prompt for image/video generation." })),
+    task_id: Type.Optional(
+      Type.String({ description: "Task ID for polling asynchronous generation result." }),
+    ),
+    remoteToolName: Type.Optional(
+      Type.String({
+        description:
+          "Optional exact remote MCP tool name (for example modelstudio_wanx26_image_generation).",
+      }),
+    ),
+    toolName: Type.Optional(
+      Type.String({
+        description:
+          "Alias of remoteToolName. Use only when you need to force a specific remote MCP method.",
+      }),
+    ),
+    arguments: Type.Optional(
+      Type.Object(
+        {},
+        {
+          description:
+            "Pass-through arguments for remote Wan2.6 MCP tool. Preferred for provider-native payloads.",
+          additionalProperties: true,
+        },
+      ),
+    ),
+  },
+  { additionalProperties: true },
+);
+
 const MCP_SHARED_EXECUTION_CONTRACT = [
   "Execution contract:",
   "1) Availability first. If this tool is unavailable (disabled, not activated in Bailian, or missing API key), briefly explain that and continue with a clear fallback instead of stalling.",
@@ -119,10 +158,18 @@ const WEB_PARSER_DESCRIPTION = [
 
 const WAN26_MEDIA_DESCRIPTION = [
   "Generate image/video through Aliyun DashScope MCP Wan2.6. Supports optional auto-send back to current DingTalk session.",
+  "Routing rule: when user asks for drawing/photo/image, use image generation first; only use video generation when user explicitly requests video.",
+  "You can pass mode=image|video|task_status. If mode is omitted, image is the safe default for drawing/photo requests.",
+  "When sending media tags in DingTalk, remote image URLs must be downloaded to a local file first. Only use [DING:IMAGE path=\"/absolute/local/path.png\"].",
   "Wan2.6 tasks can be asynchronous (submit task then fetch result). Treat generation as incomplete until final fetch reports completion.",
   MCP_SHARED_EXECUTION_CONTRACT,
   "Fallback policy: if unavailable, do not pretend media is generated; provide prompt refinement and execution steps the user can run after enabling the tool.",
+  "Auth failures (HTTP 401/403) are non-retryable until API key/activation is fixed.",
 ].join("\n\n");
+
+const WAN26_BAILIAN_DETAIL_URL =
+  "https://bailian.console.aliyun.com/cn-beijing/?tab=app#/mcp-market/detail/Wan26Media";
+const WAN26_LOCAL_META_KEYS = new Set(["mode", "intent", "remoteToolName", "toolName", "mcpToolName"]);
 
 function normalizeRemoteArgs(params: Record<string, unknown>): Record<string, unknown> {
   const nested = params.arguments;
@@ -130,6 +177,36 @@ function normalizeRemoteArgs(params: Record<string, unknown>): Record<string, un
     return nested as Record<string, unknown>;
   }
   return params;
+}
+
+function readString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function resolveWan26PreferredRemoteToolName(
+  allArgs: Record<string, unknown>,
+  normalizedArgs: Record<string, unknown>,
+): string | undefined {
+  return (
+    readString(allArgs.remoteToolName) ??
+    readString(allArgs.toolName) ??
+    readString(allArgs.mcpToolName) ??
+    readString(normalizedArgs.remoteToolName) ??
+    readString(normalizedArgs.toolName) ??
+    readString(normalizedArgs.mcpToolName)
+  );
+}
+
+function sanitizeWan26RemoteArgs(normalizedArgs: Record<string, unknown>): Record<string, unknown> {
+  const copied = { ...normalizedArgs };
+  for (const key of WAN26_LOCAL_META_KEYS) {
+    delete copied[key];
+  }
+  return copied;
 }
 
 function jsonResult(payload: unknown) {
@@ -156,6 +233,92 @@ function makeMissingApiKeyPayload(toolId: AliyunMcpToolId) {
     ok: false,
     error: "missing_dashscope_api_key",
     message: `Missing API key for ${ALIYUN_MCP_PLUGIN_TOOL_NAMES[toolId]}. Configure one of: ${describeAliyunMcpApiKeyHints(toolId)}.`,
+  };
+}
+
+function parseHttpStatusFromError(error: unknown): number | undefined {
+  const text = String(error);
+  const patterns = [
+    /\(HTTP\s*(\d{3})\)/i,
+    /\bHTTP\s*(\d{3})\b/i,
+    /\bstatus(?:\s*code)?\s*[:=]\s*(\d{3})\b/i,
+    /"status"\s*:\s*(\d{3})/i,
+  ];
+  for (const pattern of patterns) {
+    const matched = text.match(pattern);
+    if (!matched) {
+      continue;
+    }
+    const parsed = Number(matched[1]);
+    if (Number.isInteger(parsed) && parsed >= 100 && parsed <= 599) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function buildMcpCallFailurePayload(params: {
+  error: unknown;
+  toolId: AliyunMcpToolId;
+  toolName: string;
+  endpoint: string;
+}) {
+  const rawMessage = String(params.error);
+  const lower = rawMessage.toLowerCase();
+  const httpStatus = parseHttpStatusFromError(params.error);
+  const hints = [`API Key 配置项：${describeAliyunMcpApiKeyHints(params.toolId)}`];
+
+  if (params.toolId === "wan26Media") {
+    hints.push(`万相 MCP 开通入口：${WAN26_BAILIAN_DETAIL_URL}`);
+  }
+
+  if (httpStatus === 401 || httpStatus === 403 || lower.includes("unauthorized") || lower.includes("forbidden")) {
+    return {
+      ok: false,
+      error: "mcp_auth_failed",
+      tool: params.toolName,
+      endpoint: params.endpoint,
+      httpStatus: httpStatus ?? (lower.includes("forbidden") ? 403 : 401),
+      retryable: false,
+      message: `${params.toolName} authentication failed. Verify API key and MCP activation before retrying.`,
+      hints,
+      rawError: rawMessage,
+    };
+  }
+
+  if (httpStatus === 400 || lower.includes("invalid") || lower.includes("bad request")) {
+    return {
+      ok: false,
+      error: "mcp_invalid_arguments",
+      tool: params.toolName,
+      endpoint: params.endpoint,
+      httpStatus: httpStatus ?? 400,
+      retryable: false,
+      message: `${params.toolName} rejected arguments. Check parameter names/types and retry with corrected payload.`,
+      rawError: rawMessage,
+    };
+  }
+
+  if (httpStatus === 429 || (httpStatus !== undefined && httpStatus >= 500)) {
+    return {
+      ok: false,
+      error: "mcp_transient_failed",
+      tool: params.toolName,
+      endpoint: params.endpoint,
+      httpStatus,
+      retryable: true,
+      message: `${params.toolName} temporary upstream failure. Retry after a short delay.`,
+      rawError: rawMessage,
+    };
+  }
+
+  return {
+    ok: false,
+    error: "mcp_call_failed",
+    tool: params.toolName,
+    endpoint: params.endpoint,
+    message: rawMessage,
+    retryable: false,
   };
 }
 
@@ -224,7 +387,13 @@ function createToolFactory(params: {
         }
 
         const allArgs = (args ?? {}) as Record<string, unknown>;
-        const remoteArgs = params.toolId === "webSearch" ? allArgs : normalizeRemoteArgs(allArgs);
+        const normalizedArgs = params.toolId === "webSearch" ? allArgs : normalizeRemoteArgs(allArgs);
+        const wan26PreferredRemoteToolName =
+          params.toolId === "wan26Media"
+            ? resolveWan26PreferredRemoteToolName(allArgs, normalizedArgs)
+            : undefined;
+        const remoteArgs =
+          params.toolId === "wan26Media" ? sanitizeWan26RemoteArgs(normalizedArgs) : normalizedArgs;
 
         try {
           const invoked = await invokeAliyunMcpTool({
@@ -233,6 +402,8 @@ function createToolFactory(params: {
             apiKey,
             timeoutSeconds: executionConfig.timeoutSeconds,
             arguments: remoteArgs,
+            selectionArguments: allArgs,
+            preferredRemoteToolName: wan26PreferredRemoteToolName,
             logger: params.logger,
           });
 
@@ -259,13 +430,14 @@ function createToolFactory(params: {
           };
           return jsonResult(payload);
         } catch (error) {
-          return jsonResult({
-            ok: false,
-            error: "mcp_call_failed",
-            tool: pluginToolName,
-            endpoint: executionToolConfig.endpoint,
-            message: String(error),
-          });
+          return jsonResult(
+            buildMcpCallFailurePayload({
+              error,
+              toolId: params.toolId,
+              toolName: pluginToolName,
+              endpoint: executionToolConfig.endpoint,
+            }),
+          );
         }
       },
     };
@@ -330,7 +502,7 @@ export function createAliyunMcpRegistrations(params: {
         toolId: "wan26Media",
         label: "Aliyun Wan2.6 Media",
         description: WAN26_MEDIA_DESCRIPTION,
-        parameters: GenericArgsSchema,
+        parameters: Wan26Schema,
         pluginConfig: params.pluginConfig,
         clawConfig: params.clawConfig,
         logger: params.logger,

@@ -32,6 +32,7 @@ export const BASIC_ACCOUNT: ResolvedDingTalkAccount = {
   showToolStatus: false,
   showToolResult: false,
   blockStreaming: true,
+  streamBlockTextToSession: false,
   thinking: "off",
   aiCard: {
     enabled: false,

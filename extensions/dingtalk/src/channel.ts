@@ -117,23 +117,62 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
       type: "object",
       properties: {
         enabled: { type: "boolean", default: true },
-        clientId: { type: "string" },
-        clientSecret: { type: "string" },
-        clientSecretFile: { type: "string" },
-        replyMode: { type: "string", enum: ["text", "markdown"], default: "text" },
-        maxChars: { type: "number", default: 1800 },
-        tableMode: { type: "string", enum: ["off", "code"], default: "code" },
-        responsePrefix: { type: "string" },
-        requirePrefix: { type: "string" },
-        requireMention: { type: "boolean", default: true },
-        isolateContextPerUserInGroup: { type: "boolean", default: false },
-        mentionBypassUsers: { type: "array", items: { type: "string" } },
-        allowFrom: { type: "array", items: { type: "string" } },
-        selfUserId: { type: "string" },
-        blockStreaming: { type: "boolean", default: true },
-        apiBase: { type: "string" },
-        openPath: { type: "string" },
-        subscriptionsJson: { type: "string" },
+        credentials: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            clientId: { type: "string" },
+            clientSecret: { type: "string" },
+            clientSecretFile: { type: "string" },
+            selfUserId: { type: "string" },
+          },
+        },
+        conversation: {
+          type: "object",
+          properties: {
+            allowFrom: { type: "array", items: { type: "string" } },
+            requireMention: { type: "boolean", default: true },
+            requirePrefix: { type: "string" },
+            mentionBypassUsers: { type: "array", items: { type: "string" } },
+            isolateContextPerUserInGroup: { type: "boolean", default: false },
+          },
+        },
+        reply: {
+          type: "object",
+          properties: {
+            replyMode: { type: "string", enum: ["text", "markdown"], default: "text" },
+            maxChars: { type: "number", default: 1800 },
+            tableMode: { type: "string", enum: ["off", "code"], default: "code" },
+            responsePrefix: { type: "string" },
+            showToolStatus: { type: "boolean", default: false },
+            showToolResult: { type: "boolean", default: false },
+            thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high"], default: "off" },
+            coalesce: {
+              type: "object",
+              properties: {
+                enabled: { type: "boolean", default: true },
+                minChars: { type: "number", minimum: 200, default: 800 },
+                maxChars: { type: "number", minimum: 800, default: 1200 },
+                idleMs: { type: "number", minimum: 0, default: 1000 },
+              },
+            },
+          },
+        },
+        streaming: {
+          type: "object",
+          properties: {
+            blockStreaming: { type: "boolean", default: true },
+            streamBlockTextToSession: { type: "boolean", default: false },
+          },
+        },
+        connection: {
+          type: "object",
+          properties: {
+            apiBase: { type: "string", default: "https://api.dingtalk.com" },
+            openPath: { type: "string", default: "/v1.0/gateway/connections/open" },
+            subscriptionsJson: { type: "string" },
+          },
+        },
         aiCard: {
           type: "object",
           properties: {
@@ -205,88 +244,266 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
       },
     },
     uiHints: {
-      enabled: { label: "启用", help: "是否启用钉钉渠道" },
-      clientId: { label: "Client ID", help: "钉钉机器人的 Client ID（AppKey）", placeholder: "dingo..." },
-      clientSecret: { label: "Client Secret", help: "钉钉机器人的 Client Secret（AppSecret）", sensitive: true },
-      clientSecretFile: { label: "Client Secret 文件", help: "包含 Client Secret 的文件路径（替代直接配置）", advanced: true },
-      replyMode: { label: "回复模式", help: "消息格式：text（纯文本）或 markdown" },
-      maxChars: { label: "最大字符数", help: "单条消息最大字符数（超出将分段发送）" },
-      tableMode: { label: "表格模式", help: "Markdown 表格处理方式：off（保留）、code（转为代码块）", advanced: true },
-      responsePrefix: { label: "回复前缀", help: "添加到回复开头的文本（支持 {model}/{provider}/{identity} 变量）", advanced: true },
-      requirePrefix: { label: "触发前缀", help: "群聊中需要以此前缀开头才会响应", advanced: true },
-      requireMention: { label: "需要@提及", help: "群聊中需要@机器人才会响应（默认启用）", advanced: true },
-      isolateContextPerUserInGroup: {
-        label: "群聊上下文隔离",
-        help: "开启后，同一个群聊中不同用户与机器人对话将使用不同上下文（互不影响）",
-        advanced: true,
+      enabled: { label: "启用钉钉渠道", help: "总开关。关闭后该账号不接收消息也不发送回复。", order: 10 },
+      credentials: {
+        label: "1. 接入凭据",
+        help: "先完成机器人凭据配置，再继续配置消息行为。",
+        order: 20,
       },
-      mentionBypassUsers: { label: "@提及豁免用户", help: "无需@机器人即可触发的用户 ID 列表", advanced: true },
-      allowFrom: { label: "允许发送者", help: "允许发送消息的用户 ID 列表（空表示允许所有）", advanced: true },
-      selfUserId: { label: "机器人用户 ID", help: "机器人自身的用户 ID，用于过滤自己的消息", advanced: true },
-      blockStreaming: { label: "块流式回复", help: "启用后会发送 block 增量；关闭后只发送 final", advanced: true },
-      apiBase: { label: "API 基础 URL", help: "钉钉 API 基础地址（默认：https://api.dingtalk.com）", advanced: true },
-      openPath: { label: "Open Path", help: "Stream 连接路径（默认：/v1.0/gateway/connections/open）", advanced: true },
-      subscriptionsJson: { label: "订阅配置 JSON", help: "自定义订阅配置 JSON（高级用法）", advanced: true },
-      "aiCard.enabled": { label: "启用 AI 卡片", help: "是否启用高级互动卡片能力", advanced: true },
-      "aiCard.templateId": { label: "默认模板 ID", help: "AI 卡片默认模板 ID", advanced: true },
-      "aiCard.autoReply": { label: "自动卡片回复", help: "未显式指定 card 时自动用 AI 卡片回复", advanced: true },
-      "aiCard.textParamKey": { label: "文本变量 Key", help: "自动回复时文本映射的变量名", advanced: true },
-      "aiCard.defaultCardData": { label: "默认卡片数据", help: "自动回复时附加的默认变量", advanced: true },
-      "aiCard.callbackType": { label: "回调类型", help: "卡片回调类型（默认 STREAM）", advanced: true },
-      "aiCard.updateThrottleMs": { label: "更新节流 (ms)", help: "流式更新节流间隔", advanced: true },
-      "aiCard.fallbackReplyMode": { label: "失败回退模式", help: "卡片发送失败时的文本模式", advanced: true },
-      "aiCard.openSpace": { label: "默认 openSpace", help: "卡片投放 openSpace 结构（高级）", advanced: true },
+      "credentials.name": { label: "账号显示名称", help: "用于多账号场景下的识别名称（可选）。", order: 10 },
+      "credentials.clientId": {
+        label: "Client ID (AppKey)",
+        help: "钉钉应用的 Client ID。可在开发者后台查看。",
+        placeholder: "dingo...",
+        order: 20,
+      },
+      "credentials.clientSecret": {
+        label: "Client Secret (AppSecret)",
+        help: "钉钉应用密钥。建议优先使用文件或环境变量管理。",
+        sensitive: true,
+        order: 30,
+      },
+      "credentials.clientSecretFile": {
+        label: "Client Secret 文件路径",
+        help: "从本地文件读取 Client Secret，适合生产环境避免明文写入配置。",
+        advanced: true,
+        order: 40,
+      },
+      "credentials.selfUserId": {
+        label: "机器人用户 ID",
+        help: "用于过滤机器人自身消息，避免自触发循环。",
+        advanced: true,
+        order: 50,
+      },
+      conversation: {
+        label: "2. 会话触发与权限",
+        help: "控制哪些消息会触发机器人，以及群聊上下文隔离策略。",
+        order: 30,
+      },
+      "conversation.allowFrom": {
+        label: "允许发送者列表",
+        help: "仅允许列表内用户触发（留空表示允许所有用户）。",
+        advanced: true,
+        order: 10,
+      },
+      "conversation.requireMention": {
+        label: "群聊要求 @机器人",
+        help: "开启后，群聊里需要 @ 机器人才会响应。",
+        advanced: true,
+        order: 20,
+      },
+      "conversation.requirePrefix": {
+        label: "群聊触发前缀",
+        help: "设置后仅响应以此前缀开头的消息（仅群聊生效）。",
+        advanced: true,
+        order: 30,
+      },
+      "conversation.mentionBypassUsers": {
+        label: "@提及豁免用户",
+        help: "这些用户在群聊中可不 @ 机器人直接触发。",
+        advanced: true,
+        order: 40,
+      },
+      "conversation.isolateContextPerUserInGroup": {
+        label: "群聊按用户隔离上下文",
+        help: "开启后同一群内每个用户拥有独立会话上下文。",
+        advanced: true,
+        order: 50,
+      },
       aliyunMcp: {
-        label: "阿里云百炼 MCP",
-        help: `四个内置 MCP 默认关闭。启用前请先在百炼控制台开通。MCP 广场：${BAILIAN_MCP_MARKET_URL}`,
+        order: 35,
+        label: "3. 阿里云百炼 MCP",
+        help:
+          `四个内置 MCP 默认关闭。启用前请先在百炼控制台完成开通。` +
+          `注意：部分 MCP 服务可能按调用计费，账单会计入 API Key 所属账号。` +
+          `MCP 广场：${BAILIAN_MCP_MARKET_URL}`,
       },
       "aliyunMcp.apiKey": {
         label: "DASHSCOPE API Key",
-        help: "可选兜底鉴权；建议优先使用环境变量 DASHSCOPE_MCP_<TOOL>_API_KEY。",
+        help:
+          "可选兜底鉴权。建议优先使用 DASHSCOPE_MCP_<TOOL>_API_KEY 环境变量。注意：部分 MCP 可能收费，费用会计入该 API Key 所属账号。",
         sensitive: true,
         advanced: true,
+        order: 10,
       },
-      "aliyunMcp.timeoutSeconds": { label: "MCP 超时（秒）", advanced: true },
+      "aliyunMcp.timeoutSeconds": { label: "MCP 超时（秒）", advanced: true, order: 20 },
+      "aliyunMcp.tools": { label: "工具开关", advanced: true, order: 30 },
       "aliyunMcp.tools.webSearch.enabled": {
         label: "启用联网搜索（WebSearch）",
         help: `开通提醒：先在百炼控制台开通“联网搜索”MCP。详情：${BAILIAN_MCP_DETAIL_URLS.webSearch}`,
+        order: 10,
       },
       "aliyunMcp.tools.webSearch.endpoint": {
         label: "联网搜索服务地址",
         help: "默认使用百炼官方 WebSearch MCP 地址。",
         advanced: true,
+        order: 20,
       },
       "aliyunMcp.tools.codeInterpreter.enabled": {
         label: "启用代码解释器（code_interpreter_mcp）",
         help: `开通提醒：先在百炼控制台开通“代码解释器”MCP。详情：${BAILIAN_MCP_DETAIL_URLS.codeInterpreter}`,
+        order: 30,
       },
       "aliyunMcp.tools.codeInterpreter.endpoint": {
         label: "代码解释器服务地址",
         help: "默认使用百炼官方 code_interpreter_mcp 地址。",
         advanced: true,
+        order: 40,
       },
       "aliyunMcp.tools.webParser.enabled": {
         label: "启用网页解析（WebParser）",
         help: `开通提醒：先在百炼控制台开通“网页解析”MCP。详情：${BAILIAN_MCP_DETAIL_URLS.webParser}`,
+        order: 50,
       },
       "aliyunMcp.tools.webParser.endpoint": {
         label: "网页解析服务地址",
         help: "默认使用百炼官方 WebParser MCP 地址。",
         advanced: true,
+        order: 60,
       },
       "aliyunMcp.tools.wan26Media.enabled": {
         label: "启用通义万相2.6（Wan26Media）",
         help: `开通提醒：先在百炼控制台开通“通义万相2.6-图像视频生成”MCP。详情：${BAILIAN_MCP_DETAIL_URLS.wan26Media}`,
+        order: 70,
       },
       "aliyunMcp.tools.wan26Media.endpoint": {
         label: "通义万相2.6服务地址",
         help: "默认使用百炼官方 Wan26Media MCP 地址。",
         advanced: true,
+        order: 80,
       },
       "aliyunMcp.tools.wan26Media.autoSendToDingtalk": {
         label: "万相结果自动回传钉钉会话",
+        help: "开启后，媒体生成完成会自动发送回当前钉钉会话。",
+        order: 90,
       },
-    },
+      reply: {
+        label: "4. 回复策略与展示",
+        help: "设置回复格式、文本长度、思考强度和工具执行提示。",
+        order: 40,
+      },
+      "reply.replyMode": { label: "回复模式", help: "text 为纯文本，markdown 为富文本。", order: 10 },
+      "reply.maxChars": { label: "单条最大字符数", help: "超过后会自动拆分为多条消息发送。", order: 20 },
+      "reply.tableMode": {
+        label: "表格处理模式",
+        help: "off 保留原样，code 将 Markdown 表格转代码块提高兼容性。",
+        advanced: true,
+        order: 30,
+      },
+      "reply.responsePrefix": {
+        label: "回复前缀",
+        help: "追加到每条回复开头，支持 {model}/{provider}/{identity} 变量。",
+        advanced: true,
+        order: 40,
+      },
+      "reply.showToolStatus": {
+        label: "显示工具执行状态",
+        help: "执行工具时发送“正在执行”提示，便于用户感知过程。",
+        advanced: true,
+        order: 50,
+      },
+      "reply.showToolResult": {
+        label: "显示工具执行结果",
+        help: "工具执行完成后发送“执行完成”结果提示。",
+        advanced: true,
+        order: 60,
+      },
+      "reply.thinking": {
+        label: "思考强度",
+        help: "控制模型推理强度：off/minimal/low/medium/high。",
+        advanced: true,
+        order: 70,
+      },
+      "reply.coalesce": {
+        label: "流式合并发送",
+        help: "将短增量合并后再发送，降低刷屏并保持可读性。",
+        advanced: true,
+        order: 80,
+      },
+      "reply.coalesce.enabled": {
+        label: "启用合并发送",
+        help: "开启后按阈值合并流式文本再下发到钉钉。",
+        advanced: true,
+        order: 10,
+      },
+      "reply.coalesce.minChars": {
+        label: "最小合并字符数",
+        help: "累计达到该字符数后可触发发送（建议小于 maxChars）。",
+        advanced: true,
+        order: 20,
+      },
+      "reply.coalesce.maxChars": {
+        label: "最大合并字符数",
+        help: "累计超过该值会立即发送，避免单条过长。",
+        advanced: true,
+        order: 30,
+      },
+      "reply.coalesce.idleMs": {
+        label: "空闲触发时间 (ms)",
+        help: "在新增内容暂时停顿超过该时长时立即发送。",
+        advanced: true,
+        order: 40,
+      },
+      streaming: {
+        label: "5. 流式输出",
+        help: "控制 block 增量与 final 回复的发送策略。",
+        order: 50,
+      },
+      "streaming.blockStreaming": {
+        label: "启用块流式回复",
+        help: "开启后实时发送 block 增量；关闭则只在最终阶段发送完整回复。",
+        advanced: true,
+        order: 10,
+      },
+      "streaming.streamBlockTextToSession": {
+        label: "直接发送 block 文本到会话",
+        help: "开启后 block 文本直接进入会话；关闭时仅 final 阶段输出完整文本。",
+        advanced: true,
+        order: 20,
+      },
+      connection: {
+        label: "6. 连接与网关",
+        help: "高级连接参数。除私有化或调试场景外建议保持默认。",
+        order: 60,
+      },
+      "connection.apiBase": {
+        label: "API 基础地址",
+        help: "默认 https://api.dingtalk.com。",
+        advanced: true,
+        order: 10,
+      },
+      "connection.openPath": {
+        label: "Stream Open Path",
+        help: "默认 /v1.0/gateway/connections/open。",
+        advanced: true,
+        order: 20,
+      },
+      "connection.subscriptionsJson": {
+        label: "订阅配置 JSON",
+        help: "自定义 stream 订阅结构（高级调试用途）。",
+        advanced: true,
+        order: 30,
+      },
+      aiCard: {
+        label: "7. AI 卡片",
+        help: "配置钉钉 AI 卡片模板、回调与流式更新策略。",
+        order: 70,
+      },
+      "aiCard.enabled": { label: "启用 AI 卡片", help: "开启后可使用互动卡片回复。", advanced: true, order: 10 },
+      "aiCard.templateId": { label: "默认模板 ID", help: "未显式指定时使用该模板。", advanced: true, order: 20 },
+      "aiCard.autoReply": {
+        label: "自动卡片回复",
+        help: "未指定 card 参数时自动将文本回复映射为卡片。",
+        advanced: true,
+        order: 30,
+      },
+      "aiCard.textParamKey": { label: "文本变量 Key", help: "自动回复时写入文本变量的字段名。", advanced: true, order: 40 },
+      "aiCard.defaultCardData": { label: "默认卡片数据", help: "自动回复时附加的默认模板变量。", advanced: true, order: 50 },
+      "aiCard.callbackType": { label: "回调类型", help: "卡片回调模式，默认 STREAM。", advanced: true, order: 60 },
+      "aiCard.updateThrottleMs": { label: "更新节流 (ms)", help: "限制流式更新频率，降低回调压力。", advanced: true, order: 70 },
+      "aiCard.fallbackReplyMode": { label: "失败回退模式", help: "卡片发送失败时回退到 text 或 markdown。", advanced: true, order: 80 },
+      "aiCard.openSpace": { label: "默认 openSpace", help: "卡片投放 openSpace 结构（高级）。", advanced: true, order: 90 },
+    } as Record<string, any>,
   },
 
   config: {
@@ -334,13 +551,28 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
       if (!dingtalk) return cfg;
 
       if (accountId === DEFAULT_ACCOUNT_ID) {
-        // Clear base-level credentials
-        const { clientId, clientSecret, clientSecretFile, ...rest } = dingtalk;
+        // Clear base-level credentials (both grouped and legacy paths)
+        const {
+          clientId: _legacyClientId,
+          clientSecret: _legacyClientSecret,
+          clientSecretFile: _legacyClientSecretFile,
+          ...rest
+        } = dingtalk;
+        const credentials = (dingtalk.credentials ?? {}) as Record<string, unknown>;
+        const {
+          clientId: _groupClientId,
+          clientSecret: _groupClientSecret,
+          clientSecretFile: _groupClientSecretFile,
+          ...restCredentials
+        } = credentials;
         return {
           ...cfg,
           channels: {
             ...cfg.channels,
-            [DINGTALK_CHANNEL_ID]: rest,
+            [DINGTALK_CHANNEL_ID]: {
+              ...rest,
+              credentials: Object.keys(restCredentials).length > 0 ? restCredentials : undefined,
+            },
           },
         };
       }

@@ -33,6 +33,113 @@ describe("resolveDingTalkAccount", () => {
     expect(account.enabled).toBe(true);
   });
 
+  it("resolves grouped config from new Control UI paths", () => {
+    const cfg = {
+      channels: {
+        [DINGTALK_CHANNEL_ID]: {
+          enabled: true,
+          credentials: {
+            name: "Grouped Bot",
+            clientId: "grouped-client-id",
+            clientSecret: "grouped-client-secret",
+            selfUserId: "bot-self-001",
+          },
+          conversation: {
+            allowFrom: ["user-1"],
+            requireMention: false,
+            requirePrefix: "#",
+            mentionBypassUsers: ["admin-1"],
+            isolateContextPerUserInGroup: true,
+          },
+          reply: {
+            replyMode: "markdown",
+            maxChars: 2400,
+            tableMode: "off",
+            responsePrefix: "[bot]",
+            showToolStatus: true,
+            showToolResult: true,
+            thinking: "medium",
+            coalesce: {
+              enabled: true,
+              minChars: 600,
+              maxChars: 1400,
+              idleMs: 700,
+            },
+          },
+          streaming: {
+            blockStreaming: false,
+            streamBlockTextToSession: true,
+          },
+          connection: {
+            apiBase: "https://api.example.com",
+            openPath: "/gateway/open",
+            subscriptionsJson: "{\"type\":\"test\"}",
+          },
+        },
+      },
+    };
+
+    const account = resolveDingTalkAccount({ cfg });
+
+    expect(account.name).toBe("Grouped Bot");
+    expect(account.clientId).toBe("grouped-client-id");
+    expect(account.clientSecret).toBe("grouped-client-secret");
+    expect(account.selfUserId).toBe("bot-self-001");
+    expect(account.allowFrom).toEqual(["user-1"]);
+    expect(account.requireMention).toBe(false);
+    expect(account.requirePrefix).toBe("#");
+    expect(account.mentionBypassUsers).toEqual(["admin-1"]);
+    expect(account.isolateContextPerUserInGroup).toBe(true);
+    expect(account.replyMode).toBe("markdown");
+    expect(account.maxChars).toBe(2400);
+    expect(account.tableMode).toBe("off");
+    expect(account.responsePrefix).toBe("[bot]");
+    expect(account.showToolStatus).toBe(true);
+    expect(account.showToolResult).toBe(true);
+    expect(account.thinking).toBe("medium");
+    expect(account.coalesce).toEqual({
+      enabled: true,
+      minChars: 600,
+      maxChars: 1400,
+      idleMs: 700,
+    });
+    expect(account.blockStreaming).toBe(false);
+    expect(account.streamBlockTextToSession).toBe(true);
+    expect(account.apiBase).toBe("https://api.example.com");
+    expect(account.openPath).toBe("/gateway/open");
+    expect(account.subscriptionsJson).toBe("{\"type\":\"test\"}");
+  });
+
+  it("prefers grouped config over legacy flat fields when both exist", () => {
+    const cfg = {
+      channels: {
+        [DINGTALK_CHANNEL_ID]: {
+          clientId: "legacy-client-id",
+          clientSecret: "legacy-client-secret",
+          replyMode: "text",
+          blockStreaming: true,
+          credentials: {
+            clientId: "grouped-client-id",
+            clientSecret: "grouped-client-secret",
+          },
+          reply: {
+            replyMode: "markdown",
+          },
+          streaming: {
+            blockStreaming: false,
+          },
+        },
+      },
+    };
+
+    const account = resolveDingTalkAccount({ cfg });
+
+    expect(account.clientId).toBe("grouped-client-id");
+    expect(account.clientSecret).toBe("grouped-client-secret");
+    expect(account.replyMode).toBe("markdown");
+    expect(account.blockStreaming).toBe(false);
+  });
+
   it("resolves account from environment variables", () => {
     process.env.DINGTALK_CLIENT_ID = "env-client-id";
     process.env.DINGTALK_CLIENT_SECRET = "env-client-secret";
@@ -71,6 +178,32 @@ describe("resolveDingTalkAccount", () => {
     expect(account.replyMode).toBe("markdown");
   });
 
+  it("supports grouped account-level overrides in multi-account config", () => {
+    const cfg = createMultiAccountConfig() as Record<string, any>;
+    cfg.channels[DINGTALK_CHANNEL_ID].conversation = { requireMention: true };
+    cfg.channels[DINGTALK_CHANNEL_ID].reply = { showToolStatus: false };
+    cfg.channels[DINGTALK_CHANNEL_ID].accounts.team1 = {
+      ...cfg.channels[DINGTALK_CHANNEL_ID].accounts.team1,
+      credentials: {
+        clientId: "team1-grouped-client-id",
+        clientSecret: "team1-grouped-client-secret",
+      },
+      conversation: {
+        requireMention: false,
+      },
+      reply: {
+        showToolStatus: true,
+      },
+    };
+
+    const account = resolveDingTalkAccount({ cfg, accountId: "team1" });
+
+    expect(account.clientId).toBe("team1-grouped-client-id");
+    expect(account.clientSecret).toBe("team1-grouped-client-secret");
+    expect(account.requireMention).toBe(false);
+    expect(account.showToolStatus).toBe(true);
+  });
+
   it("applies default values", () => {
     const cfg = createMockClawdbotConfig();
     const account = resolveDingTalkAccount({ cfg });
@@ -84,6 +217,7 @@ describe("resolveDingTalkAccount", () => {
     expect(account.showToolStatus).toBe(false);
     expect(account.showToolResult).toBe(false);
     expect(account.blockStreaming).toBe(true);
+    expect(account.streamBlockTextToSession).toBe(false);
     expect(account.isolateContextPerUserInGroup).toBe(false);
     expect(account.thinking).toBe("off");
     expect(account.aiCard.enabled).toBe(false);
@@ -148,6 +282,27 @@ describe("resolveDingTalkAccount", () => {
     expect(team2.blockStreaming).toBe(false);
   });
 
+  it("supports enabling streamBlockTextToSession at channel level", () => {
+    const cfg = createMockClawdbotConfig({
+      streamBlockTextToSession: true,
+    });
+    const account = resolveDingTalkAccount({ cfg });
+
+    expect(account.streamBlockTextToSession).toBe(true);
+  });
+
+  it("lets account-level streamBlockTextToSession override base config", () => {
+    const cfg = createMultiAccountConfig() as Record<string, any>;
+    cfg.channels[DINGTALK_CHANNEL_ID].streamBlockTextToSession = false;
+    cfg.channels[DINGTALK_CHANNEL_ID].accounts.team2.streamBlockTextToSession = true;
+
+    const team1 = resolveDingTalkAccount({ cfg, accountId: "team1" });
+    const team2 = resolveDingTalkAccount({ cfg, accountId: "team2" });
+
+    expect(team1.streamBlockTextToSession).toBe(false);
+    expect(team2.streamBlockTextToSession).toBe(true);
+  });
+
   it("handles missing dingtalk section gracefully", () => {
     const cfg = { channels: {} };
     const account = resolveDingTalkAccount({ cfg });
@@ -178,6 +333,21 @@ describe("listDingTalkAccountIds", () => {
 
   it("returns default account when base credentials exist", () => {
     const cfg = createMockClawdbotConfig();
+    const ids = listDingTalkAccountIds(cfg);
+
+    expect(ids).toContain("default");
+  });
+
+  it("returns default account when grouped credentials exist", () => {
+    const cfg = {
+      channels: {
+        [DINGTALK_CHANNEL_ID]: {
+          credentials: {
+            clientId: "grouped-client-id",
+          },
+        },
+      },
+    };
     const ids = listDingTalkAccountIds(cfg);
 
     expect(ids).toContain("default");

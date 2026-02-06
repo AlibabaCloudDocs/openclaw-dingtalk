@@ -39,6 +39,13 @@ export const ALIYUN_MCP_REMOTE_TOOL_NAME_HINTS: Record<AliyunMcpToolId, string[]
     "run_code",
   ],
   webParser: ["web_parser", "web-parser", "webparser", "parse_web", "web_parse"],
-  wan26Media: ["wan26_media", "wan26", "wanx", "wanx_generate", "media_generate"],
+  wan26Media: [
+    "modelstudio_wanx26_image_generation",
+    "wanx26_image_generation",
+    "text_to_image",
+    "image_generation",
+    "wan26_media",
+    "wanx",
+    "media_generate",
+  ],
 };
-

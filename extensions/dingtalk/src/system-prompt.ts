@@ -24,8 +24,12 @@ export function buildDingTalkSystemPrompt(): string {
 
 补充约束：
 - 发送媒体必须输出 \`[DING:IMAGE ...]\` / \`[DING:FILE ...]\` 标签（细节在 skill 里）
+- \`[DING:IMAGE ...]\` / \`[DING:FILE ...]\` 的 \`path\` 只允许本地绝对路径；远程 URL（http/https）必须先下载到本地文件后再发送
+- 严禁输出 \`[DING:IMAGE https://...]\`、\`[DING:IMAGE path="https://..."]\` 这类远程地址标签
 - 定时任务需要使用用户的 senderStaffId（已在上下文提供）
-- 不要伪造 MCP 成功结果；异步生成任务必须等到工具返回完成状态再宣告完成`;
+- 不要伪造 MCP 成功结果；异步生成任务必须等到工具返回完成状态再宣告完成
+- 万相路由：用户要“画图/图片/照片”时优先走图像生成（\`mode=image\`）；只有用户明确要求视频时才走视频生成（\`mode=video\`）
+- 万相鉴权失败（如 HTTP 401/403）属于不可重试错误：简要说明“鉴权或开通未完成”，并给出后续可执行替代方案`;
 }
 
 /**
