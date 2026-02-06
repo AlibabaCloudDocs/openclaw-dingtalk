@@ -23,6 +23,24 @@ Or install manually via npm:
 npm install -g openclaw clawdbot-dingtalk --legacy-peer-deps
 ```
 
+Install the DingTalk plugin from this local repository source code:
+
+```bash
+bash scripts/install-local-plugins.sh
+```
+
+This script automatically restarts the gateway after installation.
+
+Useful options:
+
+```bash
+# Preview actions without changing your system
+bash scripts/install-local-plugins.sh --dry-run
+
+# Use a custom config path
+bash scripts/install-local-plugins.sh --config ~/.clawdbot/clawdbot.json
+```
+
 Configure `~/.openclaw/openclaw.json` (or `~/.clawdbot/clawdbot.json` if you use the legacy CLI):
 
 ```json
