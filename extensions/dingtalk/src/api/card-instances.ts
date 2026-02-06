@@ -127,6 +127,43 @@ function extractApiError(data: any): { ok: boolean; message?: string } {
   return { ok: true };
 }
 
+function truncateText(text: string, maxLen: number = 500): string {
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen)}...(truncated)`;
+}
+
+function previewResponseBody(data: any, rawText: string): string {
+  if (rawText) return truncateText(rawText);
+  if (data === undefined || data === null) return "";
+  if (typeof data === "string") return truncateText(data);
+  try {
+    return truncateText(JSON.stringify(data));
+  } catch {
+    return "[unserializable response body]";
+  }
+}
+
+function logApiResponse(
+  logger: StreamLogger | undefined,
+  action: string,
+  status: number,
+  data: any,
+  rawText: string
+): void {
+  if (!logger?.info) return;
+  const errcode = data?.errcode ?? data?.errorCode ?? data?.code ?? data?.error_code ?? data?.error;
+  const errmsg = data?.errmsg ?? data?.errorMessage ?? data?.message;
+  logger.info(
+    {
+      status,
+      errcode,
+      errmsg,
+      responseBody: previewResponseBody(data, rawText),
+    },
+    `${action} response`
+  );
+}
+
 /**
  * Create a new card instance.
  * API: POST /v1.0/card/instances
@@ -197,6 +234,7 @@ export async function createCardInstance(
     } catch {
       data = { raw: respText };
     }
+    logApiResponse(logger, "Card instance create", resp.status, data, respText);
 
     if (!resp.ok) {
       logger?.error?.(
@@ -292,6 +330,7 @@ export async function updateCardInstance(
     } catch {
       data = { raw: respText };
     }
+    logApiResponse(logger, "Card instance update", resp.status, data, respText);
 
     if (!resp.ok) {
       logger?.error?.(
@@ -378,6 +417,7 @@ export async function appendCardSpaces(
     } catch {
       data = { raw: respText };
     }
+    logApiResponse(logger, `Card spaces ${method}`, resp.status, data, respText);
 
     if (!resp.ok) {
       return {
@@ -479,6 +519,7 @@ export async function deliverCardInstance(
     } catch {
       data = { raw: respText };
     }
+    logApiResponse(logger, "Card instance deliver", resp.status, data, respText);
 
     if (!resp.ok) {
       logger?.error?.(
@@ -585,6 +626,7 @@ export async function createAndDeliverCardInstance(
     } catch {
       data = { raw: respText };
     }
+    logApiResponse(logger, "Card createAndDeliver", resp.status, data, respText);
 
     if (!resp.ok) {
       logger?.error?.(
