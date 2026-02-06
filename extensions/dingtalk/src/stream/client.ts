@@ -22,6 +22,36 @@ import { extractCardCallback } from "./card-callback.js";
 
 const TOPIC_CARD_INSTANCE_CALLBACK = "/v1.0/card/instances/callback";
 
+function truncateText(value: string, maxLen: number = 500): string {
+  if (value.length <= maxLen) return value;
+  return `${value.slice(0, maxLen)}...(truncated)`;
+}
+
+function serializeUnknown(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return truncateText(value);
+  try {
+    return truncateText(JSON.stringify(value));
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function getConnectionErrorDetails(err: unknown): Record<string, unknown> {
+  const anyErr = err as Record<string, any>;
+  const response = anyErr?.response as Record<string, any> | undefined;
+  const config = anyErr?.config as Record<string, any> | undefined;
+
+  return {
+    message: anyErr?.message,
+    code: anyErr?.code,
+    status: response?.status,
+    statusText: response?.statusText,
+    url: config?.url,
+    responseBody: serializeUnknown(response?.data),
+  };
+}
+
 /**
  * Start DingTalk Stream client using the official SDK.
  * Maintains persistent WebSocket connection with auto-reconnect.
@@ -171,7 +201,7 @@ export async function startDingTalkStreamClient(
     await client.connect();
     logger?.info?.("DingTalk Stream SDK connected successfully");
   } catch (err) {
-    logger?.error?.({ err: { message: (err as Error)?.message } }, "DingTalk Stream SDK connection failed");
+    logger?.error?.({ err: getConnectionErrorDetails(err) }, "DingTalk Stream SDK connection failed");
     throw err;
   }
 
