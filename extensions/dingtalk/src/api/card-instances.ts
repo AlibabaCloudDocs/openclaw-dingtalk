@@ -60,6 +60,7 @@ export interface DeliverCardInstanceOptions {
     recipients?: string[];
   };
   imRobotOpenDeliverModel?: {
+    spaceType?: "IM_ROBOT";
     robotCode: string;
     userIds?: string[];
   };

@@ -25,20 +25,35 @@ function isGroupChatType(chatType: string | undefined): boolean {
   return /group|chat|2|multi/.test(ct);
 }
 
+export function normalizeOpenSpaceId(openSpaceId?: string): string | undefined {
+  if (!openSpaceId) return undefined;
+  let normalized = openSpaceId.trim();
+  normalized = normalized.replace(/^dtv1\.card\/\/im_group\./i, "dtv1.card//IM_GROUP.");
+  normalized = normalized.replace(/^dtv1\.card\/\/im_robot\./i, "dtv1.card//IM_ROBOT.");
+  return normalized;
+}
+
 export function resolveCardUserId(chat: ChatbotMessage): string | undefined {
+  // message-parser already normalizes senderId with senderStaffId priority.
+  if (chat.senderId) return chat.senderId;
+
   const rawData = (chat.raw as { data?: unknown } | undefined)?.data;
   if (rawData && typeof rawData === "object") {
     const data = rawData as Record<string, unknown>;
-    const senderId = data.senderId;
-    if (typeof senderId === "string" && senderId) {
-      return senderId;
+    const senderStaffId = data.senderStaffId;
+    if (typeof senderStaffId === "string" && senderStaffId) {
+      return senderStaffId;
     }
     const userId = data.userId;
     if (typeof userId === "string" && userId) {
       return userId;
     }
+    const senderId = data.senderId;
+    if (typeof senderId === "string" && senderId) {
+      return senderId;
+    }
   }
-  return chat.senderId || undefined;
+  return undefined;
 }
 
 export function deriveOpenSpaceIdFromChat(chat: ChatbotMessage): string | undefined {
@@ -46,10 +61,10 @@ export function deriveOpenSpaceIdFromChat(chat: ChatbotMessage): string | undefi
   const sender = resolveCardUserId(chat);
   if (isGroupChatType(chat.chatType)) {
     if (!conv) return undefined;
-    return `dtv1.card//im_group.${conv}`;
+    return `dtv1.card//IM_GROUP.${conv}`;
   }
   if (!sender) return undefined;
-  return `dtv1.card//im_robot.${sender}`;
+  return `dtv1.card//IM_ROBOT.${sender}`;
 }
 
 export function deriveOpenSpaceFromChat(chat: ChatbotMessage): Record<string, unknown> | undefined {
@@ -82,10 +97,11 @@ export function resolveOpenSpace(params: {
   const configuredOpenSpace = card?.openSpace ?? account.aiCard.openSpace;
   const derivedOpenSpace = chat ? deriveOpenSpaceFromChat(chat) : undefined;
   const openSpace = mergeOpenSpace(derivedOpenSpace, configuredOpenSpace);
-  const openSpaceId =
+  const openSpaceId = normalizeOpenSpaceId(
     card?.openSpaceId ??
-    deriveOpenSpaceIdFromOpenSpace(openSpace) ??
-    (chat ? deriveOpenSpaceIdFromChat(chat) : undefined);
+      deriveOpenSpaceIdFromOpenSpace(openSpace) ??
+      (chat ? deriveOpenSpaceIdFromChat(chat) : undefined)
+  );
 
   return { openSpace, openSpaceId };
 }
@@ -200,13 +216,13 @@ export function deriveOpenSpaceIdFromOpenSpace(
   if (group && typeof group === "object") {
     const conv = group.openConversationId;
     if (conv) {
-      return `dtv1.card//im_group.${conv}`;
+      return `dtv1.card//IM_GROUP.${conv}`;
     }
   }
   if (robot && typeof robot === "object") {
     const userId = robot.userId;
     if (userId) {
-      return `dtv1.card//im_robot.${userId}`;
+      return `dtv1.card//IM_ROBOT.${userId}`;
     }
   }
   return undefined;

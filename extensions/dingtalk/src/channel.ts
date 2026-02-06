@@ -26,7 +26,13 @@ import { getOrCreateTokenManager } from "./runtime.js";
 import type { StreamLogger } from "./stream/types.js";
 import type { DingTalkChannelData } from "./types/channel-data.js";
 import { createCardInstance, updateCardInstance, deliverCardInstance, createAndDeliverCardInstance } from "./api/card-instances.js";
-import { generateOutTrackId, resolveOpenSpace, resolveTemplateId, buildCardDataFromText } from "./util/ai-card.js";
+import {
+  buildCardDataFromText,
+  generateOutTrackId,
+  normalizeOpenSpaceId,
+  resolveOpenSpace,
+  resolveTemplateId,
+} from "./util/ai-card.js";
 
 /**
  * Adapt clawdbot SubsystemLogger to StreamLogger interface.
@@ -437,11 +443,12 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
         let { openSpace, openSpaceId } = resolveOpenSpace({ account, card });
         const target = parseTarget(to);
         if (!openSpaceId && target.type === "group") {
-          openSpaceId = `dtv1.card//im_group.${target.id}`;
+          openSpaceId = `dtv1.card//IM_GROUP.${target.id}`;
         }
         if (!openSpaceId && target.type === "user") {
-          openSpaceId = `dtv1.card//im_robot.${target.id}`;
+          openSpaceId = `dtv1.card//IM_ROBOT.${target.id}`;
         }
+        openSpaceId = normalizeOpenSpaceId(openSpaceId);
 
         if (!openSpace && !openSpaceId) {
           return fallbackToText("Missing openSpace/openSpaceId for AI card delivery.");
@@ -520,7 +527,7 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
               ? { robotCode: account.clientId }
               : undefined,
             imRobotOpenDeliverModel: target.type === "user"
-              ? { robotCode: account.clientId }
+              ? { spaceType: "IM_ROBOT", robotCode: account.clientId }
               : undefined,
             tokenManager,
           });

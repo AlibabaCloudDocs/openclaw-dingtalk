@@ -26,6 +26,7 @@ import type { DingTalkAICard } from "./types/channel-data.js";
 import {
   buildCardDataFromText,
   generateOutTrackId,
+  normalizeOpenSpaceId,
   resolveCardUserId,
   resolveOpenSpace,
   resolveTemplateId,
@@ -340,13 +341,17 @@ export async function monitorDingTalkProvider(
       const isGroup = isGroupChatType(params.chat.chatType);
       const senderId = params.chat.senderId;
       const cardUserId = resolveCardUserId(params.chat);
-      const baseOpenSpace = openSpace ?? {};
+      const normalizedOpenSpaceId = normalizeOpenSpaceId(openSpaceId);
+      const baseOpenSpace = (openSpace ?? {}) as Record<string, unknown>;
+      const existingGroupSpace = (baseOpenSpace as any).imGroupOpenSpaceModel;
+      const existingRobotSpace = (baseOpenSpace as any).imRobotOpenSpaceModel;
 
       const openSpacePayload = isGroup
         ? {
             ...baseOpenSpace,
             imGroupOpenSpaceModel: {
-              ...(baseOpenSpace as any).imGroupOpenSpaceModel,
+              ...(existingGroupSpace ?? {}),
+              supportForward: true,
             },
             imGroupOpenDeliverModel: {
               robotCode: account.clientId,
@@ -356,11 +361,14 @@ export async function monitorDingTalkProvider(
         : {
             ...baseOpenSpace,
             imRobotOpenSpaceModel: {
-              ...(baseOpenSpace as any).imRobotOpenSpaceModel,
+              ...(existingRobotSpace ?? {}),
+              userId: (existingRobotSpace as any)?.userId ?? cardUserId,
+              supportForward: true,
             },
             imRobotOpenDeliverModel: {
               spaceType: "IM_ROBOT",
               robotCode: account.clientId,
+              userIds: cardUserId ? [cardUserId] : undefined,
             },
           };
 
@@ -371,7 +379,7 @@ export async function monitorDingTalkProvider(
         cardData: card.cardData,
         privateData: card.privateData,
         openSpace: openSpacePayload,
-        openSpaceId,
+        openSpaceId: normalizedOpenSpaceId,
         callbackType,
         userId: cardUserId,
         userIdType: 1,
@@ -380,7 +388,7 @@ export async function monitorDingTalkProvider(
         logger: log,
       });
 
-      if (!result.ok && openSpaceId) {
+      if (!result.ok && normalizedOpenSpaceId) {
         // Fallback to create + deliver if createAndDeliver fails
         const created = await createCardInstance({
           account,
@@ -388,8 +396,8 @@ export async function monitorDingTalkProvider(
           outTrackId,
           cardData: card.cardData,
           privateData: card.privateData,
-          openSpace,
-          openSpaceId,
+          openSpace: openSpacePayload,
+          openSpaceId: normalizedOpenSpaceId,
           callbackType,
           tokenManager,
           logger: log,
@@ -402,7 +410,7 @@ export async function monitorDingTalkProvider(
         const deliver = await deliverCardInstance({
           account,
           outTrackId,
-          openSpaceId,
+          openSpaceId: normalizedOpenSpaceId,
           userIdType: 1,
           imGroupOpenDeliverModel: isGroup
             ? {
@@ -412,6 +420,7 @@ export async function monitorDingTalkProvider(
             : undefined,
           imRobotOpenDeliverModel: !isGroup
             ? {
+              spaceType: "IM_ROBOT",
               robotCode: account.clientId,
               userIds: cardUserId ? [cardUserId] : undefined,
             }
