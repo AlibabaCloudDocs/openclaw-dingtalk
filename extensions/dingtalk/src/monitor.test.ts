@@ -1,6 +1,9 @@
 /**
  * Tests for DingTalk monitor.
  */
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ChatbotMessage } from "./stream/types.js";
 
@@ -96,6 +99,8 @@ describe("monitorDingTalkProvider", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
   let capturedCallback: ((message: any) => Promise<void>) | undefined;
   let capturedCardCallback: ((message: any) => Promise<void>) | undefined;
+  let testStateDir: string;
+  let previousStateDir: string | undefined;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -110,6 +115,10 @@ describe("monitorDingTalkProvider", () => {
       json: () => Promise.resolve({}),
     });
     vi.stubGlobal("fetch", mockFetch);
+
+    previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    testStateDir = mkdtempSync(join(tmpdir(), "dingtalk-monitor-state-"));
+    process.env.OPENCLAW_STATE_DIR = testStateDir;
 
     // Capture the robot callback when client is created
     const { DWClient, TOPIC_ROBOT } = await import("dingtalk-stream");
@@ -127,6 +136,12 @@ describe("monitorDingTalkProvider", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
+    rmSync(testStateDir, { recursive: true, force: true });
   });
 
   const mockConfig = {
@@ -158,6 +173,65 @@ describe("monitorDingTalkProvider", () => {
       isInAtList: true,
     }),
   });
+
+  const writeSessionTranscript = (params: {
+    sessionKey: string;
+    messages: Array<{
+      text: string;
+      provider?: string;
+      model?: string;
+      stopReason?: string;
+      timestamp?: number;
+    }>;
+  }): void => {
+    const sessionsDir = join(testStateDir, "agents", "main", "sessions");
+    mkdirSync(sessionsDir, { recursive: true });
+
+    const sessionId = "test-session-1";
+    const sessionFile = join(sessionsDir, `${sessionId}.jsonl`);
+    const sessionsStore = {
+      [params.sessionKey]: {
+        sessionId,
+        updatedAt: Date.now(),
+        sessionFile,
+      },
+    };
+
+    writeFileSync(join(sessionsDir, "sessions.json"), JSON.stringify(sessionsStore, null, 2), "utf-8");
+
+    const lines: string[] = [
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: new Date().toISOString(),
+        cwd: "/tmp",
+      }),
+    ];
+
+    for (const [index, message] of params.messages.entries()) {
+      const ts = message.timestamp ?? Date.now();
+      lines.push(
+        JSON.stringify({
+          type: "message",
+          id: `m-${index + 1}`,
+          parentId: null,
+          timestamp: new Date(ts).toISOString(),
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: message.text }],
+            api: "openai-responses",
+            provider: message.provider ?? "openclaw",
+            model: message.model ?? "delivery-mirror",
+            stopReason: message.stopReason ?? "stop",
+            timestamp: ts,
+          },
+        })
+      );
+    }
+
+    writeFileSync(sessionFile, `${lines.join("\n")}\n`, "utf-8");
+  };
 
   it("starts monitoring and returns handle", async () => {
     const handle = await monitorDingTalkProvider({
@@ -232,6 +306,80 @@ describe("monitorDingTalkProvider", () => {
       >).mock.calls[0];
       expect(call[0].replyOptions?.disableBlockStreaming).toBe(true);
     }
+  });
+
+  it("sends one synthesized final when only block text is received and streamBlockTextToSession is false", async () => {
+    const runtime = getDingTalkRuntime();
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "第一段" }, { kind: "block" });
+      return { queuedFinal: false, counts: { tool: 0, block: 1, final: 0 } };
+    });
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toBe("第一段");
+  });
+
+  it("does not synthesize duplicate final when final payload already exists", async () => {
+    const runtime = getDingTalkRuntime();
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "中间块" }, { kind: "block" });
+      await params.dispatcherOptions.deliver({ text: "最终答案" }, { kind: "final" });
+      return { queuedFinal: true, counts: { tool: 0, block: 1, final: 1 } };
+    });
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toBe("最终答案");
+  });
+
+  it("streams block text immediately when streamBlockTextToSession is true", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "实时块文本" }, { kind: "block" });
+      return { queuedFinal: false, counts: { tool: 0, block: 1, final: 0 } };
+    });
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toBe("实时块文本");
   });
 
   it("isolates group SessionKey per sender when enabled", async () => {
@@ -1069,6 +1217,121 @@ describe("monitorDingTalkProvider", () => {
     expect(mockFetch.mock.calls.some((entry) => String(entry[0]).includes("sendBySession"))).toBe(
       true
     );
+  });
+
+  it("sends one transcript fallback when a run produced zero DingTalk deliveries", async () => {
+    const sessionKey = "agent:main:dingtalk:group:cid123";
+    writeSessionTranscript({
+      sessionKey,
+      messages: [
+        {
+          text: "这是一条应该补发到钉钉的最终回复",
+        },
+      ],
+    });
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toContain("应该补发到钉钉");
+  });
+
+  it("does not trigger transcript fallback when a normal delivery already happened", async () => {
+    const runtime = getDingTalkRuntime();
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "正常发送内容" }, { kind: "final" });
+      return { counts: { block: 0, final: 1 } };
+    });
+
+    const sessionKey = "agent:main:dingtalk:group:cid123";
+    writeSessionTranscript({
+      sessionKey,
+      messages: [
+        {
+          text: "这条补发内容不应该被发送",
+        },
+      ],
+    });
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toBe("正常发送内容");
+  });
+
+  it("picks the last delivery-mirror assistant text as fallback", async () => {
+    const sessionKey = "agent:main:dingtalk:group:cid123";
+    const baseTs = Date.now();
+    writeSessionTranscript({
+      sessionKey,
+      messages: [
+        {
+          text: "第一条镜像消息",
+          timestamp: baseTs - 1000,
+        },
+        {
+          text: "第二条镜像消息",
+          timestamp: baseTs,
+        },
+      ],
+    });
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toBe("第二条镜像消息");
+  });
+
+  it("skips transcript fallback when mirror text only contains directives", async () => {
+    const sessionKey = "agent:main:dingtalk:group:cid123";
+    writeSessionTranscript({
+      sessionKey,
+      messages: [
+        {
+          text: "[[reply_to_current]][[audio_as_voice]]",
+        },
+      ],
+    });
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("dispatches card callback as virtual message", async () => {

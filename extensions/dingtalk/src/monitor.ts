@@ -2,6 +2,10 @@
  * DingTalk monitor - starts the stream client and dispatches messages to Clawdbot.
  */
 
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 type ClawdbotConfig = any;
 import { loadWebMedia } from "openclaw/plugin-sdk";
 import type { ResolvedDingTalkAccount } from "./accounts.js";
@@ -198,6 +202,204 @@ function ensureDingTalkStreamingConfig(cfg: ClawdbotConfig): ClawdbotConfig {
   };
 }
 
+type SessionStoreEntry = {
+  sessionId?: string;
+  sessionFile?: string;
+};
+
+function resolveOpenClawStateDir(): string {
+  const override = process.env.OPENCLAW_STATE_DIR?.trim() || process.env.CLAWDBOT_STATE_DIR?.trim();
+  if (override) {
+    if (override.startsWith("~")) {
+      return path.resolve(override.replace(/^~(?=$|[\\/])/, os.homedir()));
+    }
+    return path.resolve(override);
+  }
+
+  const candidates = [".openclaw", ".clawdbot", ".moltbot", ".moldbot"].map((dir) =>
+    path.join(os.homedir(), dir)
+  );
+  return candidates.find((dir) => {
+    try {
+      return !!dir && existsSync(dir);
+    } catch {
+      return false;
+    }
+  }) ?? candidates[0];
+}
+
+function resolveSessionStorePath(agentId = "main"): string {
+  return path.join(resolveOpenClawStateDir(), "agents", agentId, "sessions", "sessions.json");
+}
+
+function extractAssistantText(content: unknown): string | undefined {
+  if (!content) {
+    return undefined;
+  }
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+
+  const parts: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") {
+      continue;
+    }
+    const textBlock = block as { type?: unknown; text?: unknown };
+    if (textBlock.type === "text" && typeof textBlock.text === "string" && textBlock.text.trim()) {
+      parts.push(textBlock.text);
+    }
+  }
+
+  if (parts.length === 0) {
+    return undefined;
+  }
+  return parts.join("\n");
+}
+
+function resolveMessageTimestamp(
+  entry: Record<string, unknown>,
+  message: Record<string, unknown>
+): number | undefined {
+  const messageTs = message.timestamp;
+  if (typeof messageTs === "number" && Number.isFinite(messageTs)) {
+    return messageTs;
+  }
+
+  const entryTs = entry.timestamp;
+  if (typeof entryTs === "string") {
+    const parsed = Date.parse(entryTs);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function normalizeSilentFallbackText(raw?: string): string | undefined {
+  if (!raw?.trim()) {
+    return undefined;
+  }
+  if (isOnlyDirectiveTags(raw)) {
+    return undefined;
+  }
+  const stripped = stripDirectiveTagsPreserveFormatting(raw);
+  if (!stripped.trim()) {
+    return undefined;
+  }
+  const trimmed = stripped.trim();
+  if (/^(?:\.{1,2}\/|\/|~\/|file:\/\/|MEDIA:|attachment:\/\/)/i.test(trimmed)) {
+    return undefined;
+  }
+  return stripped;
+}
+
+async function resolveSessionTranscriptPathBySessionKey(
+  sessionKey: string,
+  agentId = "main"
+): Promise<string | undefined> {
+  const storePath = resolveSessionStorePath(agentId);
+  let parsed: Record<string, SessionStoreEntry> | undefined;
+
+  try {
+    const storeRaw = await readFile(storePath, "utf-8");
+    parsed = JSON.parse(storeRaw) as Record<string, SessionStoreEntry>;
+  } catch {
+    return undefined;
+  }
+
+  const entry = parsed?.[sessionKey];
+  if (!entry) {
+    return undefined;
+  }
+
+  if (entry.sessionFile?.trim()) {
+    const file = entry.sessionFile.trim();
+    return path.isAbsolute(file) ? file : path.resolve(path.dirname(storePath), file);
+  }
+
+  if (!entry.sessionId?.trim()) {
+    return undefined;
+  }
+  return path.join(path.dirname(storePath), `${entry.sessionId.trim()}.jsonl`);
+}
+
+async function readSilentRunFallbackFromTranscript(params: {
+  sessionKey: string;
+  runStartedAt: number;
+  runEndedAt: number;
+}): Promise<string | undefined> {
+  const transcriptPath = await resolveSessionTranscriptPathBySessionKey(params.sessionKey);
+  if (!transcriptPath) {
+    return undefined;
+  }
+
+  let raw = "";
+  try {
+    raw = await readFile(transcriptPath, "utf-8");
+  } catch {
+    return undefined;
+  }
+
+  const lines = raw.split(/\r?\n/);
+  const windowStart = params.runStartedAt - 30_000;
+  const windowEnd = params.runEndedAt + 15_000;
+  let fallbackText: string | undefined;
+
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]?.trim();
+    if (!line) {
+      continue;
+    }
+
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") {
+      continue;
+    }
+    const message = entry.message as Record<string, unknown>;
+    if (message.role !== "assistant") {
+      continue;
+    }
+
+    const ts = resolveMessageTimestamp(entry, message);
+    if (typeof ts !== "number") {
+      continue;
+    }
+    if (ts < windowStart || ts > windowEnd) {
+      continue;
+    }
+
+    const normalizedText = normalizeSilentFallbackText(
+      extractAssistantText(message.content)
+    );
+    if (!normalizedText) {
+      continue;
+    }
+
+    const isMirror =
+      message.provider === "openclaw" &&
+      message.model === "delivery-mirror" &&
+      (message.stopReason === "stop" || message.stopReason === undefined);
+    if (isMirror) {
+      return normalizedText;
+    }
+    if (!fallbackText) {
+      fallbackText = normalizedText;
+    }
+  }
+
+  return fallbackText;
+}
+
 /**
  * Start monitoring DingTalk for incoming messages.
  */
@@ -334,10 +536,11 @@ export async function monitorDingTalkProvider(
     info: { kind: string };
     chat: ChatbotMessage;
     sessionKey: string;
-  }): Promise<{ handled: boolean; ok: boolean; error?: Error }> {
+  }): Promise<{ handled: boolean; ok: boolean; delivered: boolean; error?: Error }> {
     const channelData = params.payload.channelData?.dingtalk as { card?: DingTalkAICard } | undefined;
     let card = channelData?.card;
     const isFinal = params.info.kind === "final";
+    let didDeliver = false;
 
     const autoEnabled =
       account.aiCard.enabled &&
@@ -352,11 +555,11 @@ export async function monitorDingTalkProvider(
         },
         "Skipping AI card auto-reply (conditions not met)"
       );
-      return { handled: false, ok: false };
+      return { handled: false, ok: false, delivered: false };
     }
 
     if (!account.aiCard.enabled) {
-      return { handled: true, ok: false, error: new Error("AI Card is disabled for this account.") };
+      return { handled: true, ok: false, delivered: false, error: new Error("AI Card is disabled for this account.") };
     }
 
     const normalizeTextForCard = (text?: string): string => {
@@ -409,6 +612,7 @@ export async function monitorDingTalkProvider(
       });
       if (sent.ok) {
         mediaSentCount += 1;
+        didDeliver = true;
       } else {
         mediaErrors.push(`${normalized}: ${sent.error?.message ?? "send failed"}`);
       }
@@ -457,7 +661,7 @@ export async function monitorDingTalkProvider(
           },
           "Skipping AI card auto-reply (conditions not met)"
         );
-        return { handled: false, ok: false };
+        return { handled: false, ok: false, delivered: false };
       }
 
       card = {
@@ -470,16 +674,21 @@ export async function monitorDingTalkProvider(
 
     const templateId = resolveTemplateId(account, card);
     if (!templateId) {
-      return { handled: true, ok: false, error: new Error("Missing AI card templateId.") };
+      return { handled: true, ok: false, delivered: false, error: new Error("Missing AI card templateId.") };
     }
 
     if (!card.cardData) {
-      return { handled: true, ok: false, error: new Error("Missing AI card cardData.") };
+      return { handled: true, ok: false, delivered: false, error: new Error("Missing AI card cardData.") };
     }
 
     const { openSpace, openSpaceId } = resolveOpenSpace({ account, card, chat: params.chat });
     if (!openSpace && !openSpaceId) {
-      return { handled: true, ok: false, error: new Error("Missing openSpace/openSpaceId for AI card delivery.") };
+      return {
+        handled: true,
+        ok: false,
+        delivered: false,
+        error: new Error("Missing openSpace/openSpaceId for AI card delivery."),
+      };
     }
 
     const stream = card.stream !== false;
@@ -534,11 +743,11 @@ export async function monitorDingTalkProvider(
         "AI card delivery stage failed"
       );
       clearCardStreamState(params.sessionKey);
-      return { handled: true, ok: false, error: fallbackError };
+      return { handled: true, ok: false, delivered: didDeliver, error: fallbackError };
     };
 
     if (!stream && !isFinal) {
-      return { handled: true, ok: true };
+      return { handled: true, ok: true, delivered: false };
     }
     const isGroup = isGroupChatType(params.chat.chatType);
     const senderId = params.chat.senderId;
@@ -588,7 +797,7 @@ export async function monitorDingTalkProvider(
           logger: log,
         });
         clearCardStreamState(params.sessionKey);
-        return { handled: true, ok: updated.ok, error: updated.error };
+        return { handled: true, ok: updated.ok, delivered: updated.ok, error: updated.error };
       }
 
       const created = await createCardInstance({
@@ -632,7 +841,7 @@ export async function monitorDingTalkProvider(
         logger: log,
       });
       clearCardStreamState(params.sessionKey);
-      return { handled: true, ok: deliver.ok, error: deliver.error };
+      return { handled: true, ok: deliver.ok, delivered: deliver.ok, error: deliver.error };
     }
 
     let state = { ...baseState };
@@ -680,6 +889,7 @@ export async function monitorDingTalkProvider(
       if (!deliver.ok) {
         return fail("deliver", deliver.error);
       }
+      didDeliver = true;
       state = {
         ...state,
         cardInstanceId: created.cardInstanceId ?? state.cardInstanceId,
@@ -708,6 +918,7 @@ export async function monitorDingTalkProvider(
       if (!inputingResult.ok) {
         return fail("inputing", inputingResult.error);
       }
+      didDeliver = true;
       state = { ...state, inputingStarted: true };
     }
 
@@ -731,6 +942,7 @@ export async function monitorDingTalkProvider(
       if (!streaming.ok) {
         return fail("streaming", streaming.error);
       }
+      didDeliver = true;
       state = {
         ...state,
         lastUpdateAt: now,
@@ -761,12 +973,13 @@ export async function monitorDingTalkProvider(
       if (!finished.ok) {
         return fail("finish", finished.error);
       }
+      didDeliver = true;
       clearCardStreamState(params.sessionKey);
-      return { handled: true, ok: true };
+      return { handled: true, ok: true, delivered: true };
     }
 
     setCardStreamState(params.sessionKey, state);
-    return { handled: true, ok: true };
+    return { handled: true, ok: true, delivered: didDeliver };
   }
 
   const client = await startDingTalkStreamClient({
@@ -867,6 +1080,169 @@ export async function monitorDingTalkProvider(
         : verboseOverrides.has(sessionKey)
           ? true
           : account.showToolStatus || account.showToolResult;
+    const runStartedAt = Date.now();
+    const aiCardAutoReplyEnabled =
+      account.aiCard.enabled &&
+      account.aiCard.autoReply &&
+      Boolean(account.aiCard.templateId);
+    const runDeliveryState = {
+      deliveredCount: 0,
+      lastTextCandidate: undefined as string | undefined,
+      fallbackSent: false,
+    };
+    const blockTextBufferState = {
+      sawBlockText: false,
+      accumulatedText: "",
+      finalTextDelivered: false,
+      synthesizedFinalSent: false,
+    };
+    const mergeBufferedBlockText = (previous: string, next: string): string => {
+      if (!next) return previous;
+      if (!previous) return next;
+      if (next.startsWith(previous)) return next;
+      if (previous.startsWith(next)) return previous;
+      if (next.endsWith(previous)) return next;
+      if (previous.endsWith(next)) return previous;
+      if (next.includes(previous)) return next;
+      if (previous.includes(next)) return previous;
+      return `${previous}${next}`;
+    };
+    const rememberBufferedBlockText = (text?: string): void => {
+      const normalized = normalizeSilentFallbackText(text);
+      if (!normalized) {
+        return;
+      }
+      blockTextBufferState.sawBlockText = true;
+      blockTextBufferState.accumulatedText = mergeBufferedBlockText(
+        blockTextBufferState.accumulatedText,
+        normalized
+      );
+    };
+    const maybeSendBufferedBlockTextFinal = async (
+      dispatchResult: unknown,
+      dispatcherOptions: {
+        deliver: (
+          payload: {
+            text?: string;
+            mediaUrls?: string[];
+            mediaUrl?: string;
+            replyToId?: string;
+            channelData?: { dingtalk?: Record<string, unknown> };
+          },
+          info: { kind: string }
+        ) => Promise<void> | void;
+      }
+    ): Promise<void> => {
+      if (account.streamBlockTextToSession) {
+        return;
+      }
+      if (aiCardAutoReplyEnabled) {
+        return;
+      }
+      if (
+        !blockTextBufferState.sawBlockText ||
+        blockTextBufferState.finalTextDelivered ||
+        blockTextBufferState.synthesizedFinalSent
+      ) {
+        return;
+      }
+
+      const text = blockTextBufferState.accumulatedText.trim()
+        ? blockTextBufferState.accumulatedText
+        : undefined;
+      if (!text) {
+        return;
+      }
+
+      const countsRaw = (dispatchResult as { counts?: Record<string, unknown> } | undefined)?.counts;
+      const hasCounts = Boolean(
+        countsRaw &&
+        typeof countsRaw === "object" &&
+        typeof countsRaw.block === "number" &&
+        typeof countsRaw.final === "number"
+      );
+      const shouldSynthesizeFinal = hasCounts
+        ? ((countsRaw?.block as number) > 0 && (countsRaw?.final as number) === 0)
+        : true;
+      if (!shouldSynthesizeFinal) {
+        return;
+      }
+
+      log?.warn?.(
+        {
+          sessionKey,
+          counts: hasCounts
+            ? {
+                block: countsRaw?.block,
+                final: countsRaw?.final,
+              }
+            : undefined,
+          reason: "final_missing_after_block_stream",
+        },
+        "Session reply appears to be missing final payload; emitting synthetic final"
+      );
+
+      await dispatcherOptions.deliver({ text }, { kind: "final" });
+      blockTextBufferState.synthesizedFinalSent = true;
+    };
+    const markDelivered = (reason: string): void => {
+      runDeliveryState.deliveredCount += 1;
+      log?.debug?.(
+        {
+          sessionKey,
+          reason,
+          deliveredCount: runDeliveryState.deliveredCount,
+        },
+        "DingTalk delivery marked"
+      );
+    };
+    const rememberTextCandidate = (text?: string): void => {
+      const normalized = normalizeSilentFallbackText(text);
+      if (!normalized) {
+        return;
+      }
+      runDeliveryState.lastTextCandidate = normalized;
+    };
+    const maybeSendSilentRunFallback = async (): Promise<void> => {
+      if (runDeliveryState.fallbackSent || runDeliveryState.deliveredCount > 0) {
+        return;
+      }
+      if (!chat.sessionWebhook?.trim()) {
+        return;
+      }
+
+      const runEndedAt = Date.now();
+      let fallbackText = await readSilentRunFallbackFromTranscript({
+        sessionKey,
+        runStartedAt,
+        runEndedAt,
+      });
+      if (!fallbackText) {
+        fallbackText = normalizeSilentFallbackText(runDeliveryState.lastTextCandidate);
+      }
+      if (!fallbackText) {
+        return;
+      }
+
+      const fallbackReply = await sendReplyViaSessionWebhook(chat.sessionWebhook, fallbackText, {
+        replyMode: account.replyMode,
+        maxChars: account.maxChars,
+        tableMode: account.tableMode,
+        logger: log,
+      });
+      if (fallbackReply.ok) {
+        runDeliveryState.fallbackSent = true;
+        markDelivered("silent_run_fallback");
+        log?.warn?.(
+          {
+            sessionKey,
+            runStartedAt,
+            runEndedAt,
+          },
+          "No DingTalk delivery observed during run; sent final fallback from transcript"
+        );
+      }
+    };
 
     log?.info?.(
       {
@@ -1003,6 +1379,7 @@ export async function monitorDingTalkProvider(
         info: { kind: string }
       ) => {
         log?.info?.({ kind: info.kind, hasText: !!payload.text, textLength: payload.text?.length ?? 0 }, "deliver called");
+        rememberTextCandidate(payload.text);
 
         const cardResult = await maybeHandleAICardDelivery({
           payload,
@@ -1011,6 +1388,9 @@ export async function monitorDingTalkProvider(
           sessionKey,
         });
         if (cardResult.handled) {
+          if (cardResult.delivered) {
+            markDelivered("ai_card");
+          }
           if (!cardResult.ok && payload.text?.trim()) {
             const fallbackMode = account.aiCard.fallbackReplyMode ?? account.replyMode;
             log?.warn?.(
@@ -1020,17 +1400,26 @@ export async function monitorDingTalkProvider(
               },
               "AI card delivery failed, falling back to text reply"
             );
-            await sendReplyViaSessionWebhook(chat.sessionWebhook, payload.text, {
+            const fallbackReply = await sendReplyViaSessionWebhook(chat.sessionWebhook, payload.text, {
               replyMode: fallbackMode,
               maxChars: account.maxChars,
               tableMode: account.tableMode,
               logger: log,
             });
+            if (fallbackReply.ok) {
+              markDelivered("ai_card_text_fallback");
+            }
           }
           return;
         }
 
-        // Allow "block" kind messages if they have text, as they often contain the main response
+        const shouldBufferBlockText =
+          info.kind === "block" && account.streamBlockTextToSession === false;
+        if (shouldBufferBlockText) {
+          rememberBufferedBlockText(payload.text);
+        }
+
+        // Allow "block" kind messages if they have text and block text streaming is enabled
         const isBlockWithText = info.kind === "block" && !!payload.text?.trim();
 
         // Allow media deliveries even when verbose is off (e.g., tool-kind images).
@@ -1044,7 +1433,10 @@ export async function monitorDingTalkProvider(
             : undefined;
         const mediaUrl = explicitMediaUrl || derivedMediaUrl;
 
-        const allowText = info.kind === "final" || allowNonFinal || isBlockWithText;
+        const allowText =
+          info.kind === "final" ||
+          allowNonFinal ||
+          (isBlockWithText && account.streamBlockTextToSession);
         const skipText = !allowText;
 
         if (skipText && !mediaUrl) {
@@ -1062,7 +1454,10 @@ export async function monitorDingTalkProvider(
           if (isHttpUrl) {
             // HTTP URL - send directly via sessionWebhook
             log?.debug?.({ mediaUrl: mediaUrl.slice(0, 50) }, "Sending HTTP image to DingTalk");
-            await sendImageViaSessionWebhook(chat.sessionWebhook, mediaUrl, { logger: log });
+            const imageResult = await sendImageViaSessionWebhook(chat.sessionWebhook, mediaUrl, { logger: log });
+            if (imageResult.ok) {
+              markDelivered("image_http");
+            }
           } else {
             // Local file path - need to upload first
             log?.info?.({ mediaUrl: mediaUrl.slice(0, 80) }, "Loading local media file");
@@ -1092,11 +1487,14 @@ export async function monitorDingTalkProvider(
 
                 if (uploadResult.ok && uploadResult.mediaId) {
                   log?.info?.({ mediaId: uploadResult.mediaId }, "Media uploaded (OAPI), sending image");
-                  await sendImageWithMediaIdViaSessionWebhook(
+                  const sentImage = await sendImageWithMediaIdViaSessionWebhook(
                     chat.sessionWebhook,
                     uploadResult.mediaId,
                     { logger: log }
                   );
+                  if (sentImage.ok) {
+                    markDelivered("image_local");
+                  }
                 } else {
                   log?.error?.({ err: uploadResult.error?.message }, "Failed to upload image via OAPI");
                 }
@@ -1117,7 +1515,7 @@ export async function monitorDingTalkProvider(
                     log?.error?.({ fileName }, "Missing target for file message delivery");
                   } else {
                     log?.info?.({ mediaId: uploadResult.mediaId, fileName }, "Media uploaded, sending file message");
-                    await sendFileMessage({
+                    const fileResult = await sendFileMessage({
                       account,
                       to,
                       mediaId: uploadResult.mediaId,
@@ -1125,6 +1523,9 @@ export async function monitorDingTalkProvider(
                       tokenManager,
                       logger: log,
                     });
+                    if (fileResult.ok) {
+                      markDelivered("file_local");
+                    }
                   }
                 } else {
                   log?.error?.({ err: uploadResult.error?.message }, "Failed to upload media to DingTalk");
@@ -1245,8 +1646,8 @@ export async function monitorDingTalkProvider(
         }
         firstReply = false;
 
-        // Convert markdown tables if needed
-        if (account.replyMode === "markdown" && account.tableMode !== "off") {
+        // Convert markdown tables and normalize markdown line breaks for DingTalk rendering.
+        if (account.replyMode === "markdown") {
           processedText = convertMarkdownForDingTalk(processedText, {
             tableMode: account.tableMode,
           });
@@ -1254,12 +1655,18 @@ export async function monitorDingTalkProvider(
 
         // Send the text reply first (if there's any text content)
         if (processedText.trim()) {
-          await sendReplyViaSessionWebhook(chat.sessionWebhook, processedText, {
+          const textReplyResult = await sendReplyViaSessionWebhook(chat.sessionWebhook, processedText, {
             replyMode: account.replyMode,
             maxChars: account.maxChars,
             tableMode: account.tableMode,
             logger: log,
           });
+          if (textReplyResult.ok) {
+            markDelivered("text_reply");
+            if (info.kind === "final") {
+              blockTextBufferState.finalTextDelivered = true;
+            }
+          }
         }
 
         // ==== Send Media Items ====
@@ -1276,11 +1683,17 @@ export async function monitorDingTalkProvider(
           if (mediaResult.failureCount > 0) {
             // Notify user of failed media
             const errorMsg = `⚠️ ${mediaResult.failureCount} 个媒体发送失败:\n${mediaResult.errors.join("\n")}`;
-            await sendReplyViaSessionWebhook(chat.sessionWebhook, errorMsg, {
+            const errorReplyResult = await sendReplyViaSessionWebhook(chat.sessionWebhook, errorMsg, {
               replyMode: "text",
               maxChars: account.maxChars,
               logger: log,
             });
+            if (errorReplyResult.ok) {
+              markDelivered("media_error_notice");
+            }
+          }
+          if (mediaResult.successCount > 0) {
+            markDelivered("media_items");
           }
 
           log?.info?.(
@@ -1340,6 +1753,8 @@ export async function monitorDingTalkProvider(
                 dispatcherOptions,
               });
             }
+            await maybeSendBufferedBlockTextFinal(dispatchResult, dispatcherOptions);
+            await maybeSendSilentRunFallback();
           } finally {
             try {
               await dispatchReply({
@@ -1362,6 +1777,8 @@ export async function monitorDingTalkProvider(
             dispatcherOptions,
           });
         }
+        await maybeSendBufferedBlockTextFinal(dispatchResult, dispatcherOptions);
+        await maybeSendSilentRunFallback();
       }
     } catch (err) {
       log?.error?.({ err: { message: (err as Error)?.message } }, "Agent dispatch error");
