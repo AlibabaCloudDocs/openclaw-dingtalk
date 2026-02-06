@@ -173,8 +173,21 @@ Enable AI Card capability via config:
 
 Notes:
 - `callbackType` should be `STREAM` to receive card callbacks over Stream API.
-- `autoReply=true` 会把普通文本回复映射成卡片变量，需要 `textParamKey` 与模板变量名一致。
+- `autoReply=true` 会把普通文本回复映射成卡片变量。
+- 新版默认会写入 `msgContent` 与 `text` 两个键；若配置了 `textParamKey`，还会同时写入该键，便于兼容不同模板变量命名。
+- Inbound AI card now uses a true streaming state machine:
+  - create card instance
+  - deliver to target openSpace
+  - set `flowStatus=2` (`INPUTING`)
+  - push incremental chunks via `PUT /v1.0/card/streaming`
+  - finalize with `isFinalize=true` and then set `flowStatus=3` (`FINISHED`)
+- `updateThrottleMs` controls non-final streaming update frequency; final update always flushes.
 - If `openSpace` / `openSpaceId` is missing, card delivery falls back to text.
+
+Required DingTalk permissions for streaming card:
+- `Card.Streaming.Write`
+- `Card.Instance.Write`
+- `qyapi_robot_sendmsg`
 
 ## Chat Commands
 

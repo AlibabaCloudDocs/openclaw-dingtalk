@@ -84,6 +84,19 @@ export interface CreateAndDeliverCardOptions {
   logger?: StreamLogger;
 }
 
+export interface StreamCardInstanceOptions {
+  account: ResolvedDingTalkAccount;
+  outTrackId: string;
+  content: string;
+  key?: string;
+  guid?: string;
+  isFull?: boolean;
+  isFinalize?: boolean;
+  isError?: boolean;
+  tokenManager?: TokenManager;
+  logger?: StreamLogger;
+}
+
 async function getAccessToken(
   account: ResolvedDingTalkAccount,
   tokenManager: TokenManager,
@@ -575,6 +588,101 @@ export async function deliverCardInstance(
     logger?.error?.(
       { err: { message: (err as Error)?.message } },
       "Card instance deliver error"
+    );
+    return { ok: false, error: err as Error };
+  }
+}
+
+/**
+ * Stream update card content.
+ * API: PUT /v1.0/card/streaming
+ */
+export async function streamCardInstance(
+  opts: StreamCardInstanceOptions
+): Promise<CardInstanceResult> {
+  const {
+    account,
+    outTrackId,
+    content,
+    key,
+    guid,
+    isFull,
+    isFinalize,
+    isError,
+    tokenManager: providedTokenManager,
+    logger,
+  } = opts;
+
+  if (!outTrackId) {
+    return { ok: false, error: new Error("Missing outTrackId") };
+  }
+
+  const tokenManager = providedTokenManager ?? createTokenManagerFromAccount(account, logger);
+  let accessToken: string;
+  try {
+    accessToken = await getAccessToken(account, tokenManager, logger, "card streaming");
+  } catch (err) {
+    return { ok: false, error: err as Error };
+  }
+
+  const url = `${account.apiBase}/v1.0/card/streaming`;
+  const body: Record<string, unknown> = {
+    outTrackId,
+    key: key ?? "msgContent",
+    content: content ?? "",
+    isFull: isFull ?? true,
+    isFinalize: isFinalize ?? false,
+    isError: isError ?? false,
+    guid: guid ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  };
+
+  try {
+    const resp = await fetch(url, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "x-acs-dingtalk-access-token": accessToken,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    const respText = await resp.text();
+    let data: any = {};
+    try {
+      data = respText ? JSON.parse(respText) : {};
+    } catch {
+      data = { raw: respText };
+    }
+    logApiResponse(logger, "Card streaming", resp.status, data, respText);
+
+    if (!resp.ok) {
+      logger?.error?.(
+        { status: resp.status, error: respText.slice(0, 200) },
+        "Card streaming failed"
+      );
+      return {
+        ok: false,
+        error: new Error(`HTTP ${resp.status}: ${respText.slice(0, 200)}`),
+        raw: data,
+      };
+    }
+
+    const apiStatus = extractApiError(data);
+    if (!apiStatus.ok) {
+      logger?.error?.({ error: apiStatus.message }, "Card streaming API error");
+      return { ok: false, error: new Error(apiStatus.message ?? "API error"), raw: data };
+    }
+
+    logger?.debug?.(
+      { outTrackId, key: body.key, isFinalize: body.isFinalize },
+      "Card streaming updated"
+    );
+    return { ok: true, raw: data };
+  } catch (err) {
+    logger?.error?.(
+      { err: { message: (err as Error)?.message } },
+      "Card streaming error"
     );
     return { ok: false, error: err as Error };
   }

@@ -7,6 +7,7 @@ import {
   createAndDeliverCardInstance,
   createCardInstance,
   deliverCardInstance,
+  streamCardInstance,
   updateCardInstance,
 } from "./card-instances.js";
 import { clearAllTokens } from "./token-manager.js";
@@ -168,5 +169,60 @@ describe("card instances API", () => {
 
     expect(result.ok).toBe(false);
     expect(result.error?.message).toContain("spaces of card is empty");
+  });
+
+  it("streams card content", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ accessToken: "test-token", expireIn: 7200 }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ success: true })),
+      });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await streamCardInstance({
+      account: BASIC_ACCOUNT,
+      outTrackId: "track-stream",
+      key: "msgContent",
+      content: "hello stream",
+      isFull: true,
+      isFinalize: false,
+    });
+
+    expect(result.ok).toBe(true);
+    const call = mockFetch.mock.calls[1];
+    expect(call[0]).toContain("/v1.0/card/streaming");
+    expect(call[1].method).toBe("PUT");
+    const body = JSON.parse(call[1].body);
+    expect(body.outTrackId).toBe("track-stream");
+    expect(body.key).toBe("msgContent");
+    expect(body.content).toBe("hello stream");
+    expect(body.isFinalize).toBe(false);
+  });
+
+  it("treats stream API error as failure", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ accessToken: "test-token", expireIn: 7200 }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: () =>
+          Promise.resolve(JSON.stringify({ success: false, message: "stream not allowed" })),
+      });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await streamCardInstance({
+      account: BASIC_ACCOUNT,
+      outTrackId: "track-stream",
+      content: "hello stream",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error?.message).toContain("stream not allowed");
   });
 });

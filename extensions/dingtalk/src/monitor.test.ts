@@ -38,6 +38,7 @@ vi.mock("dingtalk-stream", () => {
 
 vi.mock("./runtime.js", () => {
   const dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockResolvedValue({ ok: true });
+  const cardStreamState = new Map<string, any>();
   const runtime = {
     channel: {
       reply: {
@@ -52,8 +53,16 @@ vi.mock("./runtime.js", () => {
       getToken: vi.fn().mockResolvedValue("test-token"),
       invalidate: vi.fn(),
     }),
-    getCardStreamState: () => undefined,
-    setCardStreamState: vi.fn(),
+    getCardStreamState: (sessionKey: string) => cardStreamState.get(sessionKey),
+    setCardStreamState: vi.fn((sessionKey: string, state: any) => {
+      cardStreamState.set(sessionKey, state);
+    }),
+    clearCardStreamState: vi.fn((sessionKey: string) => {
+      cardStreamState.delete(sessionKey);
+    }),
+    __resetCardStreamState: () => {
+      cardStreamState.clear();
+    },
   };
 });
 
@@ -92,6 +101,8 @@ describe("monitorDingTalkProvider", () => {
     vi.clearAllMocks();
     capturedCallback = undefined;
     capturedCardCallback = undefined;
+    const runtimeModule = await import("./runtime.js");
+    (runtimeModule as any).__resetCardStreamState?.();
 
     // Mock fetch for webhook replies
     mockFetch = vi.fn().mockResolvedValue({
@@ -624,6 +635,194 @@ describe("monitorDingTalkProvider", () => {
     expect(mediaUploadApi.uploadMediaToOAPI).toHaveBeenCalled();
     const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
     expect(body.msgtype).toBe("image");
+  });
+
+  it("streams AI card via create->deliver->streaming->finish and strips directives", async () => {
+    const runtime = getDingTalkRuntime();
+    const aiCardAccount = {
+      ...BASIC_ACCOUNT,
+      aiCard: {
+        ...BASIC_ACCOUNT.aiCard,
+        enabled: true,
+        autoReply: true,
+        templateId: "tpl-1",
+        updateThrottleMs: 0,
+        textParamKey: "content",
+      },
+    };
+
+    mockFetch.mockImplementation(async (url: string, init: RequestInit) => {
+      if (url.includes("/v1.0/card/instances") && init?.method === "POST" && !url.includes("/deliver")) {
+        return {
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ cardInstanceId: "card-1" })),
+        } as any;
+      }
+      return {
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ success: true })),
+        json: () => Promise.resolve({ success: true }),
+      } as any;
+    });
+
+    await monitorDingTalkProvider({
+      account: aiCardAccount,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage({ conversationType: "1" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const call = (runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>).mock.calls[0];
+    const dispatcherOptions = call?.[0]?.dispatcherOptions;
+
+    await dispatcherOptions.deliver(
+      { text: "[[reply_to_current]]你好" },
+      { kind: "block" }
+    );
+    await dispatcherOptions.deliver(
+      { text: "你好，世界" },
+      { kind: "final" }
+    );
+
+    const apiCalls = mockFetch.mock.calls.filter((entry) =>
+      String(entry[0]).includes("api.dingtalk.com/v1.0/card/")
+    );
+    expect(apiCalls.length).toBeGreaterThanOrEqual(6);
+
+    const streamingCalls = apiCalls.filter((entry) =>
+      String(entry[0]).includes("/v1.0/card/streaming")
+    );
+    expect(streamingCalls).toHaveLength(2);
+
+    const firstStreamingBody = JSON.parse(streamingCalls[0][1].body as string);
+    expect(firstStreamingBody.content).toBe("你好");
+    expect(firstStreamingBody.isFinalize).toBe(false);
+
+    const finalStreamingBody = JSON.parse(streamingCalls[1][1].body as string);
+    expect(finalStreamingBody.content).toBe("你好，世界");
+    expect(finalStreamingBody.isFinalize).toBe(true);
+
+    const instancePutCalls = apiCalls.filter(
+      (entry) =>
+        String(entry[0]).endsWith("/v1.0/card/instances") &&
+        String((entry[1] as RequestInit)?.method ?? "") === "PUT"
+    );
+    const statuses = instancePutCalls.map((entry) => {
+      const body = JSON.parse((entry[1] as RequestInit).body as string);
+      return body.cardData?.cardParamMap?.flowStatus;
+    });
+    expect(statuses).toContain("2");
+    expect(statuses).toContain("3");
+
+    expect(mockFetch.mock.calls.some((entry) => String(entry[0]).includes("sendBySession"))).toBe(
+      false
+    );
+  });
+
+  it("throttles non-final AI card streaming updates and flushes on final", async () => {
+    const runtime = getDingTalkRuntime();
+    const aiCardAccount = {
+      ...BASIC_ACCOUNT,
+      aiCard: {
+        ...BASIC_ACCOUNT.aiCard,
+        enabled: true,
+        autoReply: true,
+        templateId: "tpl-1",
+        updateThrottleMs: 10_000,
+      },
+    };
+
+    mockFetch.mockImplementation(async (url: string, init: RequestInit) => {
+      if (url.includes("/v1.0/card/instances") && init?.method === "POST" && !url.includes("/deliver")) {
+        return {
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ cardInstanceId: "card-1" })),
+        } as any;
+      }
+      return {
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ success: true })),
+        json: () => Promise.resolve({ success: true }),
+      } as any;
+    });
+
+    await monitorDingTalkProvider({
+      account: aiCardAccount,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage({ conversationType: "1" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const call = (runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>).mock.calls[0];
+    const dispatcherOptions = call?.[0]?.dispatcherOptions;
+
+    await dispatcherOptions.deliver({ text: "A" }, { kind: "block" });
+    await dispatcherOptions.deliver({ text: "B" }, { kind: "block" });
+    await dispatcherOptions.deliver({ text: "ABC" }, { kind: "final" });
+
+    const streamingCalls = mockFetch.mock.calls.filter((entry) =>
+      String(entry[0]).includes("/v1.0/card/streaming")
+    );
+    expect(streamingCalls).toHaveLength(2);
+    const finalBody = JSON.parse(streamingCalls[1][1].body as string);
+    expect(finalBody.content).toBe("ABC");
+    expect(finalBody.isFinalize).toBe(true);
+  });
+
+  it("falls back to sessionWebhook text when AI card stage fails", async () => {
+    const runtime = getDingTalkRuntime();
+    const aiCardAccount = {
+      ...BASIC_ACCOUNT,
+      aiCard: {
+        ...BASIC_ACCOUNT.aiCard,
+        enabled: true,
+        autoReply: true,
+        templateId: "tpl-1",
+      },
+    };
+
+    mockFetch.mockImplementation(async (url: string, init: RequestInit) => {
+      if (url.includes("/v1.0/card/instances") && init?.method === "POST" && !url.includes("/deliver")) {
+        return {
+          ok: false,
+          status: 500,
+          text: () => Promise.resolve("boom"),
+        } as any;
+      }
+      if (url.includes("sendBySession")) {
+        return {
+          ok: true,
+          json: () => Promise.resolve({}),
+        } as any;
+      }
+      return {
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ success: true })),
+        json: () => Promise.resolve({ success: true }),
+      } as any;
+    });
+
+    await monitorDingTalkProvider({
+      account: aiCardAccount,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage({ conversationType: "1" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const call = (runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>).mock.calls[0];
+    const dispatcherOptions = call?.[0]?.dispatcherOptions;
+
+    await dispatcherOptions.deliver({ text: "fallback text" }, { kind: "final" });
+
+    expect(mockFetch.mock.calls.some((entry) => String(entry[0]).includes("sendBySession"))).toBe(
+      true
+    );
   });
 
   it("dispatches card callback as virtual message", async () => {

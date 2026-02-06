@@ -12,6 +12,16 @@ export type ResolvedOpenSpace = {
   openSpaceId?: string;
 };
 
+export const AICardFlowStatus = {
+  PROCESSING: "1",
+  INPUTING: "2",
+  FINISHED: "3",
+  EXECUTING: "4",
+  FAILED: "5",
+} as const;
+
+type FlowStatusValue = (typeof AICardFlowStatus)[keyof typeof AICardFlowStatus];
+
 export function generateOutTrackId(prefix: string = "card"): string {
   try {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -147,12 +157,30 @@ export function buildCardDataFromText(params: {
   text: string;
 }): Record<string, unknown> {
   const { account, text } = params;
-  const key = account.aiCard.textParamKey || "text";
   const defaults = account.aiCard.defaultCardData ?? {};
-  return ensureCardFinishedStatus({
-    ...defaults,
-    [key]: text,
-  });
+  return withCardText(defaults, buildCardTextFields(account, text));
+}
+
+export function buildInputingCardData(params: {
+  account: ResolvedDingTalkAccount;
+  text: string;
+  baseCardData?: Record<string, unknown>;
+}): Record<string, unknown> {
+  const { account, text, baseCardData } = params;
+  const base = baseCardData ?? account.aiCard.defaultCardData ?? {};
+  const withText = withCardText(base, buildCardTextFields(account, text));
+  return withFlowStatus(withText, AICardFlowStatus.INPUTING, true);
+}
+
+export function buildFinishedCardData(params: {
+  account: ResolvedDingTalkAccount;
+  text: string;
+  baseCardData?: Record<string, unknown>;
+}): Record<string, unknown> {
+  const { account, text, baseCardData } = params;
+  const base = baseCardData ?? account.aiCard.defaultCardData ?? {};
+  const withText = withCardText(base, buildCardTextFields(account, text));
+  return withFlowStatus(withText, AICardFlowStatus.FINISHED, true);
 }
 
 export function convertJSONValuesToString(obj: Record<string, unknown>): Record<string, string> {
@@ -186,21 +214,7 @@ export function ensureCardFinishedStatus(cardData: Record<string, unknown>): Rec
   if (!cardData || typeof cardData !== "object") {
     return cardData;
   }
-
-  if ("cardParamMap" in cardData) {
-    const raw = (cardData as Record<string, unknown>).cardParamMap;
-    const map = raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : {};
-    if (map.flowStatus === undefined || map.flowStatus === null || map.flowStatus === "") {
-      map.flowStatus = "3";
-    }
-    return { ...cardData, cardParamMap: map };
-  }
-
-  const map = { ...cardData };
-  if (map.flowStatus === undefined || map.flowStatus === null || map.flowStatus === "") {
-    map.flowStatus = "3";
-  }
-  return map;
+  return withFlowStatus(cardData, AICardFlowStatus.FINISHED, false);
 }
 
 export function normalizePrivateData(
@@ -247,4 +261,67 @@ export function deriveOpenSpaceIdFromOpenSpace(
     }
   }
   return undefined;
+}
+
+function buildCardTextFields(
+  account: ResolvedDingTalkAccount,
+  text: string
+): Record<string, unknown> {
+  const keys = new Set<string>(["msgContent", "text"]);
+  const custom = account.aiCard.textParamKey?.trim();
+  if (custom) {
+    keys.add(custom);
+  }
+  const fields: Record<string, unknown> = {};
+  for (const key of keys) {
+    fields[key] = text;
+  }
+  return fields;
+}
+
+function withCardText(
+  cardData: Record<string, unknown>,
+  textFields: Record<string, unknown>
+): Record<string, unknown> {
+  if (!cardData || typeof cardData !== "object") {
+    return { ...textFields };
+  }
+  if ("cardParamMap" in cardData) {
+    const raw = (cardData as Record<string, unknown>).cardParamMap;
+    const map = raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : {};
+    return {
+      ...cardData,
+      cardParamMap: {
+        ...map,
+        ...textFields,
+      },
+    };
+  }
+  return {
+    ...cardData,
+    ...textFields,
+  };
+}
+
+function withFlowStatus(
+  cardData: Record<string, unknown>,
+  status: FlowStatusValue,
+  force: boolean
+): Record<string, unknown> {
+  if (!cardData || typeof cardData !== "object") {
+    return cardData;
+  }
+  if ("cardParamMap" in cardData) {
+    const raw = (cardData as Record<string, unknown>).cardParamMap;
+    const map = raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : {};
+    if (force || map.flowStatus === undefined || map.flowStatus === null || map.flowStatus === "") {
+      map.flowStatus = status;
+    }
+    return { ...cardData, cardParamMap: map };
+  }
+  const map = { ...cardData };
+  if (force || map.flowStatus === undefined || map.flowStatus === null || map.flowStatus === "") {
+    map.flowStatus = status;
+  }
+  return map;
 }

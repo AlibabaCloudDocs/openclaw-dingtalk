@@ -72,6 +72,8 @@ export interface DingTalkAICard {
   openSpaceId?: string;
   /** Card callback type */
   callbackType?: "STREAM" | "HTTP";
+  /** Content key used by /card/streaming updates (default msgContent) */
+  contentKey?: string;
   /** Create or update mode */
   mode?: "create" | "update";
   /** Enable streaming updates */

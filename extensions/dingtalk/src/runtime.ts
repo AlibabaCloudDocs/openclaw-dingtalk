@@ -32,6 +32,11 @@ export type CardStreamState = {
   cardInstanceId?: string;
   outTrackId: string;
   templateId?: string;
+  inputingStarted?: boolean;
+  delivered?: boolean;
+  contentKey?: string;
+  accumulatedText?: string;
+  finalizedAt?: number;
   lastUpdateAt: number;
 };
 

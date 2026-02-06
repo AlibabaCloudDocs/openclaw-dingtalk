@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ChatbotMessage } from "../stream/types.js";
 import { BASIC_ACCOUNT } from "../../test/fixtures/configs.js";
 import {
+  buildFinishedCardData,
   buildCardDataFromText,
+  buildInputingCardData,
   deriveOpenSpaceIdFromChat,
   ensureCardFinishedStatus,
   normalizeOpenSpaceId,
@@ -53,7 +55,7 @@ describe("ai-card util", () => {
     expect(deriveOpenSpaceIdFromChat(groupChat)).toBe("dtv1.card//IM_GROUP.cid-group-001");
   });
 
-  it("adds flowStatus=3 when building auto card text data", () => {
+  it("writes msgContent/text/custom-key when building auto card text data", () => {
     const account = {
       ...BASIC_ACCOUNT,
       aiCard: {
@@ -63,7 +65,31 @@ describe("ai-card util", () => {
     };
     const data = buildCardDataFromText({ account, text: "hello" });
     expect((data as Record<string, unknown>).content).toBe("hello");
-    expect((data as Record<string, unknown>).flowStatus).toBe("3");
+    expect((data as Record<string, unknown>).msgContent).toBe("hello");
+    expect((data as Record<string, unknown>).text).toBe("hello");
+    expect((data as Record<string, unknown>).flowStatus).toBeUndefined();
+  });
+
+  it("builds inputing/finished status data with text fields", () => {
+    const inputing = buildInputingCardData({
+      account: BASIC_ACCOUNT,
+      text: "typing",
+      baseCardData: { title: "demo" },
+    }) as Record<string, unknown>;
+    expect(inputing.title).toBe("demo");
+    expect(inputing.msgContent).toBe("typing");
+    expect(inputing.text).toBe("typing");
+    expect(inputing.flowStatus).toBe("2");
+
+    const finished = buildFinishedCardData({
+      account: BASIC_ACCOUNT,
+      text: "done",
+      baseCardData: { title: "demo" },
+    }) as Record<string, unknown>;
+    expect(finished.title).toBe("demo");
+    expect(finished.msgContent).toBe("done");
+    expect(finished.text).toBe("done");
+    expect(finished.flowStatus).toBe("3");
   });
 
   it("keeps existing flowStatus when finishing card data", () => {

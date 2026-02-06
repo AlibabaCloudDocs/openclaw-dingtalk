@@ -42,12 +42,14 @@ export {
   updateCardInstance,
   appendCardSpaces,
   deliverCardInstance,
+  streamCardInstance,
   type CardInstanceResult,
   type CreateCardInstanceOptions,
   type CreateAndDeliverCardOptions,
   type UpdateCardInstanceOptions,
   type AppendCardSpacesOptions,
   type DeliverCardInstanceOptions,
+  type StreamCardInstanceOptions,
 } from "./card-instances.js";
 
 export {

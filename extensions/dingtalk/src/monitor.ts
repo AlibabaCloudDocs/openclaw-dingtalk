@@ -5,7 +5,13 @@
 type ClawdbotConfig = any;
 import { loadWebMedia } from "openclaw/plugin-sdk";
 import type { ResolvedDingTalkAccount } from "./accounts.js";
-import { getDingTalkRuntime, getOrCreateTokenManager, getCardStreamState, setCardStreamState } from "./runtime.js";
+import {
+  getDingTalkRuntime,
+  getOrCreateTokenManager,
+  getCardStreamState,
+  setCardStreamState,
+  clearCardStreamState,
+} from "./runtime.js";
 import { startDingTalkStreamClient } from "./stream/client.js";
 import type { ChatbotMessage, StreamClientHandle, StreamLogger, CardCallbackMessage } from "./stream/types.js";
 import { buildSessionKey, startsWithPrefix } from "./stream/message-parser.js";
@@ -17,7 +23,7 @@ import { DINGTALK_CHANNEL_ID } from "./config-schema.js";
 import { downloadMedia, uploadMedia } from "./api/media.js";
 import { uploadMediaToOAPI } from "./api/media-upload.js";
 import { sendFileMessage, sendMediaByPath } from "./api/send-message.js";
-import { createCardInstance, updateCardInstance, deliverCardInstance, createAndDeliverCardInstance } from "./api/card-instances.js";
+import { createCardInstance, updateCardInstance, deliverCardInstance, streamCardInstance } from "./api/card-instances.js";
 import { extractThinkDirective, extractThinkOnceDirective, type ThinkLevel } from "./util/think-directive.js";
 import { parseMediaProtocol, hasMediaTags, replaceMediaTags } from "./media-protocol.js";
 import { processMediaItems, uploadMediaItem } from "./send/media-sender.js";
@@ -25,7 +31,8 @@ import { DEFAULT_DINGTALK_SYSTEM_PROMPT, buildSenderContext } from "./system-pro
 import type { DingTalkAICard } from "./types/channel-data.js";
 import {
   buildCardDataFromText,
-  ensureCardFinishedStatus,
+  buildFinishedCardData,
+  buildInputingCardData,
   generateOutTrackId,
   normalizeOpenSpaceId,
   resolveCardUserId,
@@ -258,6 +265,7 @@ export async function monitorDingTalkProvider(
   }): Promise<{ handled: boolean; ok: boolean; error?: Error }> {
     const channelData = params.payload.channelData?.dingtalk as { card?: DingTalkAICard } | undefined;
     let card = channelData?.card;
+    const isFinal = params.info.kind === "final";
 
     const autoEnabled =
       account.aiCard.enabled &&
@@ -278,6 +286,27 @@ export async function monitorDingTalkProvider(
     if (!account.aiCard.enabled) {
       return { handled: true, ok: false, error: new Error("AI Card is disabled for this account.") };
     }
+
+    const normalizeTextForCard = (text?: string): string => {
+      const trimmed = text?.trim() ?? "";
+      if (!trimmed) return "";
+      if (isOnlyDirectiveTags(trimmed)) return "";
+      const stripped = stripDirectiveTags(trimmed);
+      return (stripped ?? "").trim();
+    };
+
+    const mergeAccumulatedText = (previous: string, next: string, final: boolean): string => {
+      if (!next) return previous;
+      if (!previous) return next;
+      if (final) {
+        if (next.startsWith(previous)) return next;
+        if (previous.startsWith(next)) return previous;
+        if (next.includes(previous)) return next;
+        if (previous.includes(next)) return previous;
+      }
+      if (previous.endsWith(next)) return previous;
+      return `${previous}${next}`;
+    };
 
     const chatIsGroup = isGroupChatType(params.chat.chatType);
     const cardUserId = resolveCardUserId(params.chat);
@@ -310,7 +339,7 @@ export async function monitorDingTalkProvider(
       }
     };
 
-    let cardText = params.payload.text?.trim() ?? "";
+    let cardText = normalizeTextForCard(params.payload.text);
     if (params.payload.mediaUrl?.trim()) {
       await sendCardMedia(params.payload.mediaUrl);
     }
@@ -378,156 +407,281 @@ export async function monitorDingTalkProvider(
       return { handled: true, ok: false, error: new Error("Missing openSpace/openSpaceId for AI card delivery.") };
     }
 
-    const stream = card.stream === true;
+    const stream = card.stream !== false;
     const now = Date.now();
-    const throttleMs = account.aiCard.updateThrottleMs;
-    const state = stream ? getCardStreamState(params.sessionKey) : undefined;
-    const outTrackId = card.outTrackId ?? state?.outTrackId ?? generateOutTrackId("card");
+    const throttleMs = Math.max(0, account.aiCard.updateThrottleMs);
+    const previousState = getCardStreamState(params.sessionKey);
+    const outTrackId = card.outTrackId ?? previousState?.outTrackId ?? generateOutTrackId("card");
     const callbackType = card.callbackType ?? account.aiCard.callbackType;
+    const contentKey =
+      card.contentKey?.trim() ||
+      previousState?.contentKey ||
+      account.aiCard.textParamKey ||
+      "msgContent";
+    const mergedText = mergeAccumulatedText(
+      previousState?.accumulatedText ?? "",
+      cardText,
+      isFinal
+    );
+    const defaultFinalText = mediaSentCount > 0 ? "✅ 媒体已发送" : "";
 
-    if (!stream && params.info.kind !== "final") {
-      return { handled: true, ok: true };
-    }
+    const baseState = {
+      cardInstanceId: card.cardInstanceId ?? previousState?.cardInstanceId,
+      outTrackId,
+      templateId,
+      inputingStarted: previousState?.inputingStarted ?? false,
+      delivered: previousState?.delivered ?? false,
+      contentKey,
+      accumulatedText: mergedText,
+      finalizedAt: previousState?.finalizedAt,
+      lastUpdateAt: previousState?.lastUpdateAt ?? 0,
+    };
 
-    if (stream && state && now - state.lastUpdateAt < throttleMs && params.info.kind !== "final") {
-      return { handled: true, ok: true };
-    }
-
-    const effectiveCardData = stream
-      ? (params.info.kind === "final" ? ensureCardFinishedStatus(card.cardData) : card.cardData)
-      : ensureCardFinishedStatus(card.cardData);
-    const preferUpdate =
-      card.mode === "update" ||
-      Boolean(card.cardInstanceId) ||
-      Boolean(state?.cardInstanceId);
-
-    const cardInstanceId = card.cardInstanceId ?? state?.cardInstanceId;
-
-    let result;
-    if (preferUpdate) {
-      result = await updateCardInstance({
-        account,
-        cardInstanceId,
-        outTrackId,
-        cardData: effectiveCardData,
-        privateData: card.privateData,
-        openSpace,
-        openSpaceId,
-        callbackType,
-        tokenManager,
-        logger: log,
-      });
-    } else {
-      const isGroup = isGroupChatType(params.chat.chatType);
-      const senderId = params.chat.senderId;
-      const cardUserId = resolveCardUserId(params.chat);
-      const normalizedOpenSpaceId = normalizeOpenSpaceId(openSpaceId);
-      const baseOpenSpace = (openSpace ?? {}) as Record<string, unknown>;
-      const existingGroupSpace = (baseOpenSpace as any).imGroupOpenSpaceModel;
-      const existingRobotSpace = (baseOpenSpace as any).imRobotOpenSpaceModel;
-
-      const openSpacePayload = isGroup
-        ? {
-            ...baseOpenSpace,
-            imGroupOpenSpaceModel: {
-              ...(existingGroupSpace ?? {}),
-              supportForward: true,
-            },
-            imGroupOpenDeliverModel: {
-              robotCode: account.clientId,
-              recipients: senderId ? [senderId] : undefined,
-            },
-          }
-        : {
-            ...baseOpenSpace,
-            imRobotOpenSpaceModel: {
-              ...(existingRobotSpace ?? {}),
-              userId: (existingRobotSpace as any)?.userId ?? cardUserId,
-              supportForward: true,
-            },
-            imRobotOpenDeliverModel: {
-              spaceType: "IM_ROBOT",
-              robotCode: account.clientId,
-              userIds: cardUserId ? [cardUserId] : undefined,
-            },
-          };
-
-      result = await createAndDeliverCardInstance({
-        account,
-        templateId,
-        outTrackId,
-        cardData: effectiveCardData,
-        privateData: card.privateData,
-        openSpace: openSpacePayload,
-        openSpaceId: normalizedOpenSpaceId,
-        callbackType,
-        userId: cardUserId,
-        userIdType: 1,
-        robotCode: account.clientId,
-        tokenManager,
-        logger: log,
-      });
-
-      if (!result.ok && normalizedOpenSpaceId) {
-        // Fallback to create + deliver if createAndDeliver fails
-        const created = await createCardInstance({
-          account,
-          templateId,
+    const fail = (stage: string, error?: Error) => {
+      const fallbackError = error ?? new Error(`AI card stage failed: ${stage}`);
+      log?.error?.(
+        {
+          stage,
+          sessionKey: params.sessionKey,
           outTrackId,
-          cardData: effectiveCardData,
+          err: fallbackError.message,
+        },
+        "AI card delivery stage failed"
+      );
+      clearCardStreamState(params.sessionKey);
+      return { handled: true, ok: false, error: fallbackError };
+    };
+
+    if (!stream && !isFinal) {
+      return { handled: true, ok: true };
+    }
+    const isGroup = isGroupChatType(params.chat.chatType);
+    const senderId = params.chat.senderId;
+    const normalizedOpenSpaceId = normalizeOpenSpaceId(openSpaceId);
+    const baseOpenSpace = (openSpace ?? {}) as Record<string, unknown>;
+    const existingGroupSpace = (baseOpenSpace as Record<string, any>).imGroupOpenSpaceModel;
+    const existingRobotSpace = (baseOpenSpace as Record<string, any>).imRobotOpenSpaceModel;
+
+    const openSpaceCreatePayload = isGroup
+      ? {
+          ...baseOpenSpace,
+          imGroupOpenSpaceModel: {
+            ...(existingGroupSpace ?? {}),
+            supportForward: true,
+          },
+        }
+      : {
+          ...baseOpenSpace,
+          imRobotOpenSpaceModel: {
+            ...(existingRobotSpace ?? {}),
+            userId: (existingRobotSpace as any)?.userId ?? cardUserId,
+            supportForward: true,
+          },
+        };
+
+    if (!stream) {
+      const finalText = mergedText.trim() ? mergedText : defaultFinalText;
+      const finalCardData = buildFinishedCardData({
+        account,
+        text: finalText,
+        baseCardData: card.cardData,
+      });
+
+      const preferUpdate =
+        card.mode === "update" || Boolean(card.cardInstanceId) || Boolean(previousState?.cardInstanceId);
+      if (preferUpdate) {
+        const updated = await updateCardInstance({
+          account,
+          cardInstanceId: card.cardInstanceId ?? previousState?.cardInstanceId,
+          outTrackId,
+          cardData: finalCardData,
           privateData: card.privateData,
-          openSpace: openSpacePayload,
+          openSpace,
           openSpaceId: normalizedOpenSpaceId,
           callbackType,
           tokenManager,
           logger: log,
         });
+        clearCardStreamState(params.sessionKey);
+        return { handled: true, ok: updated.ok, error: updated.error };
+      }
 
-        if (!created.ok) {
-          return { handled: true, ok: false, error: created.error };
-        }
+      const created = await createCardInstance({
+        account,
+        templateId,
+        outTrackId,
+        cardData: finalCardData,
+        privateData: card.privateData,
+        openSpace: openSpaceCreatePayload,
+        openSpaceId: normalizedOpenSpaceId,
+        callbackType,
+        tokenManager,
+        logger: log,
+      });
+      if (!created.ok) {
+        return fail("create", created.error);
+      }
 
-        const deliver = await deliverCardInstance({
-          account,
-          outTrackId,
-          openSpaceId: normalizedOpenSpaceId,
-          userIdType: 1,
-          imGroupOpenDeliverModel: isGroup
-            ? {
+      if (!normalizedOpenSpaceId) {
+        return fail("resolveOpenSpace", new Error("Missing openSpaceId for AI card deliver."));
+      }
+      const deliver = await deliverCardInstance({
+        account,
+        outTrackId,
+        openSpaceId: normalizedOpenSpaceId,
+        userIdType: 1,
+        imGroupOpenDeliverModel: isGroup
+          ? {
               robotCode: account.clientId,
               recipients: senderId ? [senderId] : undefined,
             }
-            : undefined,
-          imRobotOpenDeliverModel: !isGroup
-            ? {
+          : undefined,
+        imRobotOpenDeliverModel: !isGroup
+          ? {
               spaceType: "IM_ROBOT",
               robotCode: account.clientId,
               userIds: cardUserId ? [cardUserId] : undefined,
             }
-            : undefined,
-          tokenManager,
-          logger: log,
-        });
-
-        if (!deliver.ok) {
-          return { handled: true, ok: false, error: deliver.error };
-        }
-
-        result = created;
-      }
+          : undefined,
+        tokenManager,
+        logger: log,
+      });
+      clearCardStreamState(params.sessionKey);
+      return { handled: true, ok: deliver.ok, error: deliver.error };
     }
 
-    if (result.ok) {
-      const nextState = {
-        cardInstanceId: result.cardInstanceId ?? cardInstanceId,
-        outTrackId,
+    let state = { ...baseState };
+
+    if (!state.delivered) {
+      const created = await createCardInstance({
+        account,
         templateId,
+        outTrackId: state.outTrackId,
+        cardData: card.cardData,
+        privateData: card.privateData,
+        openSpace: openSpaceCreatePayload,
+        openSpaceId: normalizedOpenSpaceId,
+        callbackType,
+        tokenManager,
+        logger: log,
+      });
+      if (!created.ok) {
+        return fail("create", created.error);
+      }
+      if (!normalizedOpenSpaceId) {
+        return fail("resolveOpenSpace", new Error("Missing openSpaceId for AI card deliver."));
+      }
+      const deliver = await deliverCardInstance({
+        account,
+        outTrackId: state.outTrackId,
+        openSpaceId: normalizedOpenSpaceId,
+        userIdType: 1,
+        imGroupOpenDeliverModel: isGroup
+          ? {
+              robotCode: account.clientId,
+              recipients: senderId ? [senderId] : undefined,
+            }
+          : undefined,
+        imRobotOpenDeliverModel: !isGroup
+          ? {
+              spaceType: "IM_ROBOT",
+              robotCode: account.clientId,
+              userIds: cardUserId ? [cardUserId] : undefined,
+            }
+          : undefined,
+        tokenManager,
+        logger: log,
+      });
+      if (!deliver.ok) {
+        return fail("deliver", deliver.error);
+      }
+      state = {
+        ...state,
+        cardInstanceId: created.cardInstanceId ?? state.cardInstanceId,
+        delivered: true,
+      };
+    }
+
+    if (!state.inputingStarted) {
+      const inputingData = buildInputingCardData({
+        account,
+        text: state.accumulatedText ?? "",
+        baseCardData: card.cardData,
+      });
+      const inputingResult = await updateCardInstance({
+        account,
+        cardInstanceId: state.cardInstanceId,
+        outTrackId: state.outTrackId,
+        cardData: inputingData,
+        privateData: card.privateData,
+        openSpace,
+        openSpaceId: normalizedOpenSpaceId,
+        callbackType,
+        tokenManager,
+        logger: log,
+      });
+      if (!inputingResult.ok) {
+        return fail("inputing", inputingResult.error);
+      }
+      state = { ...state, inputingStarted: true };
+    }
+
+    const shouldSendStreaming =
+      isFinal || !state.lastUpdateAt || now - state.lastUpdateAt >= throttleMs;
+
+    if (shouldSendStreaming) {
+      const content = state.accumulatedText?.trim()
+        ? state.accumulatedText
+        : defaultFinalText;
+      const streaming = await streamCardInstance({
+        account,
+        outTrackId: state.outTrackId,
+        key: state.contentKey,
+        content: content ?? "",
+        isFull: true,
+        isFinalize: isFinal,
+        tokenManager,
+        logger: log,
+      });
+      if (!streaming.ok) {
+        return fail("streaming", streaming.error);
+      }
+      state = {
+        ...state,
         lastUpdateAt: now,
       };
-      setCardStreamState(params.sessionKey, nextState);
     }
 
-    return { handled: true, ok: result.ok, error: result.error };
+    if (isFinal) {
+      const finalText = state.accumulatedText?.trim()
+        ? state.accumulatedText
+        : defaultFinalText;
+      const finishedData = buildFinishedCardData({
+        account,
+        text: finalText ?? "",
+        baseCardData: card.cardData,
+      });
+      const finished = await updateCardInstance({
+        account,
+        cardInstanceId: state.cardInstanceId,
+        outTrackId: state.outTrackId,
+        cardData: finishedData,
+        privateData: card.privateData,
+        openSpace,
+        openSpaceId: normalizedOpenSpaceId,
+        callbackType,
+        tokenManager,
+        logger: log,
+      });
+      if (!finished.ok) {
+        return fail("finish", finished.error);
+      }
+      clearCardStreamState(params.sessionKey);
+      return { handled: true, ok: true };
+    }
+
+    setCardStreamState(params.sessionKey, state);
+    return { handled: true, ok: true };
   }
 
   const client = await startDingTalkStreamClient({
@@ -614,6 +768,7 @@ export async function monitorDingTalkProvider(
     if (RESET_COMMAND_RE.test(chat.text)) {
       verboseOverrides.delete(sessionKey);
       thinkingLevels.delete(sessionKey);
+      clearCardStreamState(sessionKey);
     }
     const verboseOverride = parseVerboseOverride(chat.text);
     if (verboseOverride) {
