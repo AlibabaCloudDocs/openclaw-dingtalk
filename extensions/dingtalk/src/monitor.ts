@@ -236,8 +236,8 @@ export async function monitorDingTalkProvider(
   async function dispatchReply(opts: {
     ctx: Record<string, unknown>;
     dispatcherOptions: { deliver: (...args: any[]) => Promise<void> | void; onError?: (...args: any[]) => void };
-  }): Promise<void> {
-    await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+  }): Promise<unknown> {
+    return await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx: opts.ctx,
       cfg: dispatchConfig,
       dispatcherOptions: opts.dispatcherOptions as any,
@@ -251,6 +251,62 @@ export async function monitorDingTalkProvider(
         },
       },
     });
+  }
+
+  async function maybeFinalizeLingeringAICardAfterDispatch(params: {
+    sessionKey: string;
+    dispatchResult?: unknown;
+    dispatcherOptions: { deliver: (...args: any[]) => Promise<void> | void };
+  }): Promise<void> {
+    const state = getCardStreamState(params.sessionKey);
+    if (!state) {
+      return;
+    }
+
+    const countsRaw = (params.dispatchResult as { counts?: Record<string, unknown> } | undefined)?.counts;
+    const hasCounts = Boolean(
+      countsRaw &&
+      typeof countsRaw === "object" &&
+      typeof countsRaw.block === "number" &&
+      typeof countsRaw.final === "number"
+    );
+    const shouldSynthesizeFinal = hasCounts
+      ? ((countsRaw?.block as number) > 0 && (countsRaw?.final as number) === 0)
+      : true;
+    if (!shouldSynthesizeFinal) {
+      return;
+    }
+
+    log?.warn?.(
+      {
+        sessionKey: params.sessionKey,
+        outTrackId: state.outTrackId,
+        counts: hasCounts
+          ? {
+              block: countsRaw?.block,
+              final: countsRaw?.final,
+            }
+          : undefined,
+        reason: "final_missing_after_block_stream",
+      },
+      "AI card stream appears to be missing final payload; emitting synthetic final"
+    );
+
+    try {
+      await params.dispatcherOptions.deliver(
+        { text: state.accumulatedText ?? "" },
+        { kind: "final" }
+      );
+    } catch (err) {
+      log?.error?.(
+        {
+          sessionKey: params.sessionKey,
+          outTrackId: state.outTrackId,
+          err: (err as Error)?.message ?? String(err),
+        },
+        "Synthetic AI card final delivery failed"
+      );
+    }
   }
 
   async function maybeHandleAICardDelivery(params: {
@@ -1244,7 +1300,16 @@ export async function monitorDingTalkProvider(
           }
 
           try {
-            await dispatchReply({ ctx, dispatcherOptions });
+            let dispatchResult: unknown;
+            try {
+              dispatchResult = await dispatchReply({ ctx, dispatcherOptions });
+            } finally {
+              await maybeFinalizeLingeringAICardAfterDispatch({
+                sessionKey,
+                dispatchResult,
+                dispatcherOptions,
+              });
+            }
           } finally {
             try {
               await dispatchReply({
@@ -1257,7 +1322,16 @@ export async function monitorDingTalkProvider(
           }
         });
       } else {
-        await dispatchReply({ ctx, dispatcherOptions });
+        let dispatchResult: unknown;
+        try {
+          dispatchResult = await dispatchReply({ ctx, dispatcherOptions });
+        } finally {
+          await maybeFinalizeLingeringAICardAfterDispatch({
+            sessionKey,
+            dispatchResult,
+            dispatcherOptions,
+          });
+        }
       }
     } catch (err) {
       log?.error?.({ err: { message: (err as Error)?.message } }, "Agent dispatch error");

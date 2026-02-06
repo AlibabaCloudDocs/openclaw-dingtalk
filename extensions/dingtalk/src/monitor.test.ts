@@ -742,6 +742,125 @@ describe("monitorDingTalkProvider", () => {
     );
   });
 
+  it("auto-finalizes AI card when dispatch has block-only replies and no final payload", async () => {
+    const runtime = getDingTalkRuntime();
+    const aiCardAccount = {
+      ...BASIC_ACCOUNT,
+      aiCard: {
+        ...BASIC_ACCOUNT.aiCard,
+        enabled: true,
+        autoReply: true,
+        templateId: "tpl-1",
+        updateThrottleMs: 0,
+      },
+    };
+
+    mockFetch.mockImplementation(async (url: string, init: RequestInit) => {
+      if (url.includes("/v1.0/card/instances") && init?.method === "POST" && !url.includes("/deliver")) {
+        return {
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ cardInstanceId: "card-1" })),
+        } as any;
+      }
+      return {
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ success: true })),
+        json: () => Promise.resolve({ success: true }),
+      } as any;
+    });
+
+    await monitorDingTalkProvider({
+      account: aiCardAccount,
+      config: mockConfig,
+    });
+
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "你好" }, { kind: "block" });
+      return { queuedFinal: false, counts: { tool: 0, block: 1, final: 0 } };
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage({ conversationType: "1" }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const streamingCalls = mockFetch.mock.calls.filter((entry) =>
+      String(entry[0]).includes("/v1.0/card/streaming")
+    );
+    expect(streamingCalls.length).toBeGreaterThanOrEqual(2);
+    const hasFinalize = streamingCalls.some((entry) => {
+      const body = JSON.parse(entry[1].body as string);
+      return body.isFinalize === true;
+    });
+    expect(hasFinalize).toBe(true);
+
+    const instancePutCalls = mockFetch.mock.calls.filter(
+      (entry) =>
+        String(entry[0]).endsWith("/v1.0/card/instances") &&
+        String((entry[1] as RequestInit)?.method ?? "") === "PUT"
+    );
+    const statuses = instancePutCalls.map((entry) => {
+      const body = JSON.parse((entry[1] as RequestInit).body as string);
+      return body.cardData?.cardParamMap?.flowStatus;
+    });
+    expect(statuses).toContain("3");
+  });
+
+  it("does not synthesize duplicate finalization when dispatch already has final payload", async () => {
+    const runtime = getDingTalkRuntime();
+    const aiCardAccount = {
+      ...BASIC_ACCOUNT,
+      aiCard: {
+        ...BASIC_ACCOUNT.aiCard,
+        enabled: true,
+        autoReply: true,
+        templateId: "tpl-1",
+        updateThrottleMs: 0,
+      },
+    };
+
+    mockFetch.mockImplementation(async (url: string, init: RequestInit) => {
+      if (url.includes("/v1.0/card/instances") && init?.method === "POST" && !url.includes("/deliver")) {
+        return {
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ cardInstanceId: "card-1" })),
+        } as any;
+      }
+      return {
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ success: true })),
+        json: () => Promise.resolve({ success: true }),
+      } as any;
+    });
+
+    await monitorDingTalkProvider({
+      account: aiCardAccount,
+      config: mockConfig,
+    });
+
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "你好" }, { kind: "block" });
+      await params.dispatcherOptions.deliver({ text: "你好，世界" }, { kind: "final" });
+      return { queuedFinal: true, counts: { tool: 0, block: 1, final: 1 } };
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage({ conversationType: "1" }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const streamingCalls = mockFetch.mock.calls.filter((entry) =>
+      String(entry[0]).includes("/v1.0/card/streaming")
+    );
+    const finalizeCalls = streamingCalls.filter((entry) => {
+      const body = JSON.parse(entry[1].body as string);
+      return body.isFinalize === true;
+    });
+    expect(finalizeCalls).toHaveLength(1);
+  });
+
   it("throttles non-final AI card streaming updates and flushes on final", async () => {
     const runtime = getDingTalkRuntime();
     const aiCardAccount = {
