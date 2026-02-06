@@ -63,13 +63,44 @@ export function resolveOpenSpace(params: {
 }): ResolvedOpenSpace {
   const { account, card, chat } = params;
 
-  const openSpace = card?.openSpace ?? account.aiCard.openSpace;
+  const configuredOpenSpace = card?.openSpace ?? account.aiCard.openSpace;
+  const derivedOpenSpace = chat ? deriveOpenSpaceFromChat(chat) : undefined;
+  const openSpace = mergeOpenSpace(derivedOpenSpace, configuredOpenSpace);
   const openSpaceId =
     card?.openSpaceId ??
     deriveOpenSpaceIdFromOpenSpace(openSpace) ??
     (chat ? deriveOpenSpaceIdFromChat(chat) : undefined);
 
   return { openSpace, openSpaceId };
+}
+
+function mergeOpenSpace(
+  derived: Record<string, unknown> | undefined,
+  configured: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!derived && !configured) return undefined;
+  if (!derived) return configured;
+  if (!configured) return derived;
+
+  const merged: Record<string, unknown> = {
+    ...derived,
+    ...configured,
+  };
+
+  const mergeNested = (key: string) => {
+    const left = (derived as Record<string, unknown>)[key];
+    const right = (configured as Record<string, unknown>)[key];
+    if (left && typeof left === "object" && right && typeof right === "object") {
+      merged[key] = { ...(left as Record<string, unknown>), ...(right as Record<string, unknown>) };
+    }
+  };
+
+  mergeNested("imGroupOpenSpaceModel");
+  mergeNested("imRobotOpenSpaceModel");
+  mergeNested("imGroupOpenDeliverModel");
+  mergeNested("imRobotOpenDeliverModel");
+
+  return merged;
 }
 
 export function resolveTemplateId(

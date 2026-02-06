@@ -124,6 +124,27 @@ function extractApiError(data: any): { ok: boolean; message?: string } {
   if (data.success === false) {
     return { ok: false, message: data.message ?? data.errmsg ?? "DingTalk API error" };
   }
+
+  const result = data.result;
+  if (result && typeof result === "object") {
+    if (result.success === false) {
+      return { ok: false, message: result.message ?? result.errorMsg ?? "DingTalk result error" };
+    }
+    if (typeof result.errcode === "number" && result.errcode !== 0) {
+      return { ok: false, message: result.errmsg ?? result.message ?? String(result.errcode) };
+    }
+    if (typeof result.errcode === "string" && result.errcode !== "0" && result.errcode.toLowerCase() !== "ok") {
+      return { ok: false, message: result.errmsg ?? result.message ?? result.errcode };
+    }
+    if (Array.isArray(result.deliverResults)) {
+      const failed = result.deliverResults.find((item: any) => item && item.success === false);
+      if (failed) {
+        const space = failed.spaceType && failed.spaceId ? `${failed.spaceType}:${failed.spaceId}` : undefined;
+        const reason = failed.errorMsg ?? failed.errorMessage ?? failed.message ?? "deliver failed";
+        return { ok: false, message: space ? `${reason} (${space})` : reason };
+      }
+    }
+  }
   return { ok: true };
 }
 
