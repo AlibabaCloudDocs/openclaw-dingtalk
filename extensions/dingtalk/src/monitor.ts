@@ -255,6 +255,15 @@ export async function monitorDingTalkProvider(
         Boolean(account.aiCard.templateId) &&
         Boolean(params.payload.text?.trim());
       if (!allowAuto) {
+        log?.debug?.(
+          {
+            aiCardEnabled: account.aiCard.enabled,
+            aiCardAutoReply: account.aiCard.autoReply,
+            hasTemplateId: Boolean(account.aiCard.templateId),
+            hasText: Boolean(params.payload.text?.trim()),
+          },
+          "Skipping AI card auto-reply (conditions not met)"
+        );
         return { handled: false, ok: false };
       }
 
@@ -319,6 +328,7 @@ export async function monitorDingTalkProvider(
         openSpaceId,
         callbackType,
         tokenManager,
+        logger: log,
       });
     } else {
       const isGroup = isGroupChatType(params.chat.chatType);
@@ -360,6 +370,7 @@ export async function monitorDingTalkProvider(
         userIdType: 1,
         robotCode: account.clientId,
         tokenManager,
+        logger: log,
       });
 
       if (!result.ok && openSpaceId) {
@@ -374,6 +385,7 @@ export async function monitorDingTalkProvider(
           openSpaceId,
           callbackType,
           tokenManager,
+          logger: log,
         });
 
         if (!created.ok) {
@@ -398,6 +410,7 @@ export async function monitorDingTalkProvider(
             }
             : undefined,
           tokenManager,
+          logger: log,
         });
 
         if (!deliver.ok) {
@@ -662,6 +675,13 @@ export async function monitorDingTalkProvider(
         if (cardResult.handled) {
           if (!cardResult.ok && payload.text?.trim()) {
             const fallbackMode = account.aiCard.fallbackReplyMode ?? account.replyMode;
+            log?.warn?.(
+              {
+                reason: cardResult.error?.message,
+                fallbackMode,
+              },
+              "AI card delivery failed, falling back to text reply"
+            );
             await sendReplyViaSessionWebhook(chat.sessionWebhook, payload.text, {
               replyMode: fallbackMode,
               maxChars: account.maxChars,
