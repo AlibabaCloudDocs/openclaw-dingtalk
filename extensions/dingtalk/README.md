@@ -92,6 +92,13 @@ API key priority (high -> low):
 2. `DASHSCOPE_API_KEY`
 3. `plugins.entries.clawdbot-dingtalk.config.aliyunMcp.apiKey`
 
+### MCP Availability and Fallback Behavior
+
+- The agent uses availability-first behavior for all four built-in MCP tools.
+- If a tool is disabled / not activated in Bailian / missing API key, the agent should briefly explain this and continue with a practical fallback instead of stalling.
+- `aliyun_web_parser` works best with publicly accessible HTTP/HTTPS pages; login-only pages may fail.
+- `aliyun_wan26_media` can involve async task flow (submit + fetch result). The agent should not claim generation is complete before final success status is returned.
+
 ## DashScope Thinking Mode (Native)
 
 DashScope's `enable_thinking` is **natively supported** via the `/think` command. No proxy is needed.

@@ -389,6 +389,7 @@ curl -s ifconfig.me
 这意味着：
 - 如果你没打开插件里的 `webSearch`，系统就不会有任何 `web_search` 工具。
 - 这属于预期行为，不会自动回退 Brave。
+- 对话层会采用“先检测再降级”：如果工具不可用，AI 会简短说明后继续给出可执行替代方案，而不是卡住。
 
 可用最小配置示例：
 
@@ -427,6 +428,10 @@ API Key 优先级（高 -> 低）：
 1. `DASHSCOPE_MCP_<TOOL>_API_KEY`
 2. `DASHSCOPE_API_KEY`
 3. `plugins.entries.clawdbot-dingtalk.config.aliyunMcp.apiKey`
+
+补充说明：
+- `aliyun_web_parser` 更适合公开可访问 URL；登录态页面常见失败。
+- `aliyun_wan26_media` 可能是异步流程（提交任务 + 获取结果）；AI 应在最终成功状态后再宣告完成。
 
 ---
 

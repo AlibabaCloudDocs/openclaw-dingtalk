@@ -110,6 +110,13 @@ API Key 优先级：
 2. `DASHSCOPE_API_KEY`
 3. `plugins.entries.clawdbot-dingtalk.config.aliyunMcp.apiKey`
 
+### MCP 可用性与降级行为
+
+- 四个内置 MCP 工具统一采用“先检测可用性，再执行”的策略。
+- 当工具未启用、未在百炼开通或缺少 API Key 时，AI 会先简短说明，然后走替代方案，不会卡住不回复。
+- `aliyun_web_parser` 仅适合公开可访问的 HTTP/HTTPS 页面；需要登录的页面可能解析失败。
+- `aliyun_wan26_media` 可能是异步任务流程（提交任务 + 轮询结果）；在拿到最终成功状态前，AI 不应宣告“已生成完成”。
+
 ## 生产环境部署
 
 ### 方式一：systemd (推荐)

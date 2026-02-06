@@ -89,6 +89,41 @@ const WebSearchSchema = Type.Object(
   { additionalProperties: true },
 );
 
+const MCP_SHARED_EXECUTION_CONTRACT = [
+  "Execution contract:",
+  "1) Availability first. If this tool is unavailable (disabled, not activated in Bailian, or missing API key), briefly explain that and continue with a clear fallback instead of stalling.",
+  "2) Reliability. Retry only transient failures (network timeout, 429, 5xx, temporary upstream errors). Do not retry auth or invalid-parameter errors.",
+  "3) Result discipline. Report key fields from tool output and never claim success before the tool reports success.",
+].join("\n");
+
+const WEB_SEARCH_DESCRIPTION = [
+  "Search the web through Aliyun DashScope MCP WebSearch endpoint. Replaces default Brave web_search when core search is disabled.",
+  "Use this for time-sensitive facts.",
+  MCP_SHARED_EXECUTION_CONTRACT,
+  "Fallback policy: if unavailable, explicitly say web search is currently unavailable and continue with best-effort reasoning from existing context while marking uncertainty.",
+].join("\n\n");
+
+const CODE_INTERPRETER_DESCRIPTION = [
+  "Run remote code-interpreter tasks through Aliyun DashScope MCP. Pass parameters directly or via arguments object.",
+  "This tool may take longer than regular API calls. Wait for actual tool output before saying computation is complete.",
+  MCP_SHARED_EXECUTION_CONTRACT,
+  "Fallback policy: if unavailable, continue with manual reasoning, formulas, or pseudo-code and clearly label limitations.",
+].join("\n\n");
+
+const WEB_PARSER_DESCRIPTION = [
+  "Parse and extract web content through Aliyun DashScope MCP WebParser. Pass parameters directly or via arguments object.",
+  "Input must be a publicly reachable HTTP/HTTPS URL. Login-only pages or blocked pages can fail.",
+  MCP_SHARED_EXECUTION_CONTRACT,
+  "Fallback policy: if parsing fails or tool is unavailable, explain likely causes (login required, anti-bot, invalid URL), suggest a public URL or ask user to paste the raw page content.",
+].join("\n\n");
+
+const WAN26_MEDIA_DESCRIPTION = [
+  "Generate image/video through Aliyun DashScope MCP Wan2.6. Supports optional auto-send back to current DingTalk session.",
+  "Wan2.6 tasks can be asynchronous (submit task then fetch result). Treat generation as incomplete until final fetch reports completion.",
+  MCP_SHARED_EXECUTION_CONTRACT,
+  "Fallback policy: if unavailable, do not pretend media is generated; provide prompt refinement and execution steps the user can run after enabling the tool.",
+].join("\n\n");
+
 function normalizeRemoteArgs(params: Record<string, unknown>): Record<string, unknown> {
   const nested = params.arguments;
   if (nested && typeof nested === "object" && !Array.isArray(nested)) {
@@ -258,8 +293,7 @@ export function createAliyunMcpRegistrations(params: {
       factory: createToolFactory({
         toolId: "webSearch",
         label: "Aliyun Web Search",
-        description:
-          "Search the web through Aliyun DashScope MCP WebSearch endpoint. Replaces default Brave web_search when core search is disabled.",
+        description: WEB_SEARCH_DESCRIPTION,
         parameters: WebSearchSchema,
         pluginConfig: params.pluginConfig,
         clawConfig: params.clawConfig,
@@ -271,8 +305,7 @@ export function createAliyunMcpRegistrations(params: {
       factory: createToolFactory({
         toolId: "codeInterpreter",
         label: "Aliyun Code Interpreter",
-        description:
-          "Run remote code-interpreter tasks through Aliyun DashScope MCP. Pass parameters directly or via arguments object.",
+        description: CODE_INTERPRETER_DESCRIPTION,
         parameters: GenericArgsSchema,
         pluginConfig: params.pluginConfig,
         clawConfig: params.clawConfig,
@@ -284,8 +317,7 @@ export function createAliyunMcpRegistrations(params: {
       factory: createToolFactory({
         toolId: "webParser",
         label: "Aliyun Web Parser",
-        description:
-          "Parse and extract web content through Aliyun DashScope MCP WebParser. Pass parameters directly or via arguments object.",
+        description: WEB_PARSER_DESCRIPTION,
         parameters: GenericArgsSchema,
         pluginConfig: params.pluginConfig,
         clawConfig: params.clawConfig,
@@ -297,8 +329,7 @@ export function createAliyunMcpRegistrations(params: {
       factory: createToolFactory({
         toolId: "wan26Media",
         label: "Aliyun Wan2.6 Media",
-        description:
-          "Generate image/video through Aliyun DashScope MCP Wan2.6. Supports optional auto-send back to current DingTalk session.",
+        description: WAN26_MEDIA_DESCRIPTION,
         parameters: GenericArgsSchema,
         pluginConfig: params.pluginConfig,
         clawConfig: params.clawConfig,
