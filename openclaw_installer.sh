@@ -1,4 +1,9 @@
 #!/bin/bash
+# Support accidental invocation via zsh/sh by re-execing with bash.
+if [[ -z "${BASH_VERSION:-}" ]]; then
+  exec /usr/bin/env bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 # Openclaw Installer for macOS and Linux
@@ -2491,6 +2496,9 @@ install_channel_plugin() {
     ensure_openclaw_plugin_load_path_from_npm_global "$pkg" || true
 
     spinner_stop 0 "${display_name} 插件已安装"
+    if [[ "$channel" == "$CHANNEL_DINGTALK" ]]; then
+        seed_dingtalk_workspace_templates_if_missing || true
+    fi
     restart_gateway_if_running "$claw"
     return 0
 }
@@ -2592,7 +2600,16 @@ generate_channel_config() {
       "enabled": true,
       "clientId": "${CHANNEL_DINGTALK_CLIENT_ID}",
       "clientSecret": "${CHANNEL_DINGTALK_CLIENT_SECRET}",
-      "replyMode": "markdown"
+      "replyMode": "markdown",
+      "aliyunMcp": {
+        "timeoutSeconds": 60,
+        "tools": {
+          "webSearch": { "enabled": false },
+          "codeInterpreter": { "enabled": false },
+          "webParser": { "enabled": false },
+          "wan26Media": { "enabled": false, "autoSendToDingtalk": true }
+        }
+      }
     }
 EOF
 )
@@ -2618,18 +2635,7 @@ generate_plugin_entry() {
         dingtalk)
             cat <<EOF
       "$pkg": {
-        "enabled": true,
-        "config": {
-          "aliyunMcp": {
-            "timeoutSeconds": 60,
-            "tools": {
-              "webSearch": { "enabled": false },
-              "codeInterpreter": { "enabled": false },
-              "webParser": { "enabled": false },
-              "wan26Media": { "enabled": false, "autoSendToDingtalk": true }
-            }
-          }
-        }
+        "enabled": true
       }
 EOF
             ;;
@@ -3252,6 +3258,139 @@ if (typeof w === "string" && w.trim()) process.stdout.write(w.trim());
     fi
     echo "$HOME/.openclaw/workspace"
     return 0
+}
+
+resolve_installer_script_dir() {
+    local src="${BASH_SOURCE[0]:-$0}"
+    local dir=""
+    dir="$(cd "$(dirname "$src")" >/dev/null 2>&1 && pwd -P)" || return 1
+    if [[ -z "$dir" ]]; then
+        return 1
+    fi
+    echo "$dir"
+    return 0
+}
+
+expand_home_path() {
+    local raw="$1"
+    if [[ "$raw" == "~" ]]; then
+        echo "$HOME"
+        return 0
+    fi
+    if [[ "$raw" == "~/"* ]]; then
+        echo "${HOME}/${raw#~/}"
+        return 0
+    fi
+    echo "$raw"
+    return 0
+}
+
+resolve_dingtalk_workspace_template_dir() {
+    local script_dir=""
+    script_dir="$(resolve_installer_script_dir || true)"
+    if [[ -z "$script_dir" ]]; then
+        return 1
+    fi
+    local candidate="${script_dir}/extensions/dingtalk/workspace-templates"
+    if [[ -d "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+    fi
+    return 1
+}
+
+is_brand_new_workspace_dir() {
+    local workspace="$1"
+    local required=(
+        "AGENTS.md"
+        "SOUL.md"
+        "TOOLS.md"
+        "IDENTITY.md"
+        "USER.md"
+        "HEARTBEAT.md"
+    )
+    local name
+    for name in "${required[@]}"; do
+        if [[ -f "${workspace%/}/${name}" ]]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+seed_dingtalk_workspace_templates_if_missing() {
+    local raw_workspace=""
+    raw_workspace="$(resolve_openclaw_agent_workspace_dir || true)"
+    if [[ -z "$raw_workspace" ]]; then
+        return 0
+    fi
+
+    local workspace=""
+    workspace="$(expand_home_path "$raw_workspace")"
+    if [[ -z "$workspace" ]]; then
+        return 0
+    fi
+
+    mkdir -p "$workspace" 2>/dev/null || {
+        echo -e "${WARN}→${NC} 无法创建工作区目录，跳过 DingTalk 模板初始化: ${INFO}${workspace}${NC}"
+        return 0
+    }
+
+    local template_dir=""
+    template_dir="$(resolve_dingtalk_workspace_template_dir || true)"
+    if [[ -z "$template_dir" ]]; then
+        log warn "DingTalk workspace templates not found beside installer; skip seeding"
+        echo -e "${WARN}→${NC} 未找到 DingTalk workspace 模板目录，跳过初始化。"
+        return 0
+    fi
+
+    local files=(
+        "AGENTS.md"
+        "SOUL.md"
+        "TOOLS.md"
+        "IDENTITY.md"
+        "USER.md"
+        "HEARTBEAT.md"
+    )
+    local is_brand_new=0
+    if is_brand_new_workspace_dir "$workspace"; then
+        is_brand_new=1
+        files+=("BOOTSTRAP.md")
+    fi
+
+    local copied=0
+    local skipped=0
+    local failed=0
+    local name=""
+    for name in "${files[@]}"; do
+        local src="${template_dir%/}/${name}"
+        local dst="${workspace%/}/${name}"
+
+        if [[ ! -f "$src" ]]; then
+            failed=$((failed + 1))
+            log warn "Missing DingTalk workspace template: $src"
+            continue
+        fi
+
+        if [[ -e "$dst" ]]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        if cp "$src" "$dst" 2>/dev/null; then
+            copied=$((copied + 1))
+        else
+            failed=$((failed + 1))
+            log warn "Failed to seed DingTalk workspace template: $dst"
+        fi
+    done
+
+    if [[ "$copied" -gt 0 ]]; then
+        echo -e "${SUCCESS}✓${NC} DingTalk workspace 模板初始化完成: ${INFO}${workspace}${NC} ${MUTED}(新建 ${copied}，跳过 ${skipped})${NC}"
+    fi
+    if [[ "$failed" -gt 0 ]]; then
+        echo -e "${WARN}→${NC} DingTalk workspace 模板有 ${failed} 个文件初始化失败（已跳过）。"
+    fi
 }
 
 ensure_openclaw_plugin_load_path_from_npm_global() {
@@ -4383,13 +4522,14 @@ config_add_channel() {
             config_set "channels.clawdbot-dingtalk.enabled" "true"
             config_set "channels.clawdbot-dingtalk.clientId" "\"${CHANNEL_DINGTALK_CLIENT_ID}\""
             config_set "channels.clawdbot-dingtalk.clientSecret" "\"${CHANNEL_DINGTALK_CLIENT_SECRET}\""
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.timeoutSeconds" "60"
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.tools.webSearch.enabled" "false"
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.tools.codeInterpreter.enabled" "false"
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.tools.webParser.enabled" "false"
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.tools.wan26Media.enabled" "false"
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.tools.wan26Media.autoSendToDingtalk" "true"
             config_set "plugins.entries.clawdbot-dingtalk.enabled" "true"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.timeoutSeconds" "60"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.webSearch.enabled" "false"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.codeInterpreter.enabled" "false"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.webParser.enabled" "false"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.wan26Media.enabled" "false"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.wan26Media.autoSendToDingtalk" "true"
+            config_delete "plugins.entries.clawdbot-dingtalk.config"
             config_set "tools.web.search.enabled" "false"
             ;;
     esac

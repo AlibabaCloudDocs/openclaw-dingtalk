@@ -427,6 +427,25 @@ describe("monitorDingTalkProvider", () => {
     }
   });
 
+  it("injects Chinese reset guidance for bare /new", async () => {
+    const runtime = getDingTalkRuntime();
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    if (capturedCallback) {
+      await capturedCallback(createMockMessage({ text: "/new" }));
+      await new Promise((r) => setTimeout(r, 50));
+
+      const call = (runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(call[0].ctx.CommandBody).toContain("请使用中文打招呼");
+      expect(call[0].ctx.CommandBody).toContain("不要提及内部步骤");
+      expect(call[0].ctx.CommandBody.startsWith("/new ")).toBe(true);
+    }
+  });
+
   it("recognizes /verbose command", async () => {
     const runtime = getDingTalkRuntime();
 

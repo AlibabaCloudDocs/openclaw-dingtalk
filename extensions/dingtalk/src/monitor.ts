@@ -70,6 +70,17 @@ type VerboseOverride = "off" | "on" | "full";
 const ALLOWED_COMMAND_RE = /(?:^|\s)\/(new|think|thinking|reasoning|reason|model|models|verbose|v)(?=$|\s|:)/i;
 const VERBOSE_COMMAND_RE = /(?:^|\s)\/(verbose|v)(?=$|\s|:)/i;
 const RESET_COMMAND_RE = /(?:^|\s)\/new(?=$|\s|:)/i;
+const BARE_NEW_COMMAND_RE = /^\/new$/i;
+const DINGTALK_BARE_NEW_PROMPT_ZH =
+  "你正在开始一个新会话。请使用中文打招呼并保持 1-3 句，询问用户接下来想做什么；如果当前运行模型与 system prompt 里的 default_model 不同，请顺带说明默认模型。不要提及内部步骤、文件、工具或推理。";
+
+function injectChinesePromptForBareNewCommand(text: string): string {
+  const trimmed = text.trim();
+  if (!BARE_NEW_COMMAND_RE.test(trimmed)) {
+    return text;
+  }
+  return `/new ${DINGTALK_BARE_NEW_PROMPT_ZH}`;
+}
 
 const REASONING_HEADER_RE = /^Reasoning:\s*/i;
 
@@ -834,17 +845,19 @@ export async function monitorDingTalkProvider(
       }
     }
 
+    const textForAgent = injectChinesePromptForBareNewCommand(chat.text);
+
     const sessionKey = buildSessionKey(chat, "main", {
       isolateGroupBySender: account.isolateContextPerUserInGroup,
     });
-    const commandAuthorized = opts.forceCommandAuthorized ?? hasAllowedCommandToken(chat.text);
+    const commandAuthorized = opts.forceCommandAuthorized ?? hasAllowedCommandToken(textForAgent);
 
-    if (RESET_COMMAND_RE.test(chat.text)) {
+    if (RESET_COMMAND_RE.test(textForAgent)) {
       verboseOverrides.delete(sessionKey);
       thinkingLevels.delete(sessionKey);
       clearCardStreamState(sessionKey);
     }
-    const verboseOverride = parseVerboseOverride(chat.text);
+    const verboseOverride = parseVerboseOverride(textForAgent);
     if (verboseOverride) {
       verboseOverrides.set(sessionKey, verboseOverride);
     }
@@ -873,14 +886,14 @@ export async function monitorDingTalkProvider(
 
     // One-shot thinking directive: /t! on|off|minimal|low|medium|high ...
     // This is handled by the channel (not OpenClaw), so we strip it from the prompt.
-    const onceThink = extractThinkOnceDirective(chat.text);
+    const onceThink = extractThinkOnceDirective(textForAgent);
     const hasOnceThink =
       onceThink.hasDirective &&
       onceThink.thinkLevel !== undefined &&
       onceThink.cleaned.trim().length > 0;
 
     // Track persistent /think directive in a local cache (best-effort) so one-shot can restore.
-    const persistentThink = extractThinkDirective(chat.text);
+    const persistentThink = extractThinkDirective(textForAgent);
     if (persistentThink.hasDirective && persistentThink.thinkLevel !== undefined) {
       if (persistentThink.thinkLevel === "off") {
         thinkingLevels.delete(sessionKey);
@@ -945,7 +958,7 @@ export async function monitorDingTalkProvider(
       }
     }
 
-    const effectiveText = hasOnceThink ? onceThink.cleaned : chat.text;
+    const effectiveText = hasOnceThink ? onceThink.cleaned : textForAgent;
     const messageBody = effectiveText + fileContext + imageContext;
 
     // Build DingTalk channel system prompt (injected into agent context)
