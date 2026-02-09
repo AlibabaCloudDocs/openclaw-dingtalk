@@ -1,7 +1,11 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   ALIYUN_MCP_API_KEY_ENV_BY_TOOL,
   ALIYUN_MCP_API_KEY_ENV_GLOBAL,
+  ALIYUN_MCP_API_KEY_FILE_ENV,
   ALIYUN_MCP_DEFAULT_ENDPOINTS,
   ALIYUN_MCP_DEFAULT_TIMEOUT_SECONDS,
   type AliyunMcpToolId,
@@ -168,13 +172,40 @@ export function resolveAliyunMcpApiKey(params: {
   if (fromGlobalEnv) {
     return fromGlobalEnv;
   }
-  return params.config.apiKey;
+  if (params.config.apiKey) {
+    return params.config.apiKey;
+  }
+  // Plugin-only fallback: allow reading a key from a local file so users can
+  // configure MCP without Control UI config round-trips.
+  const overrideFilePath = readEnvValue(ALIYUN_MCP_API_KEY_FILE_ENV, env);
+  const defaultFilePath = path.join(
+    os.homedir(),
+    ".openclaw",
+    "secrets",
+    "clawdbot-dingtalk",
+    "aliyun-mcp-api-key",
+  );
+  const candidates = [overrideFilePath, defaultFilePath].filter(Boolean) as string[];
+  for (const candidate of candidates) {
+    try {
+      const raw = fs.readFileSync(candidate, "utf8");
+      const parsed = readString(raw);
+      if (parsed) {
+        return parsed;
+      }
+    } catch {
+      // ignore missing/unreadable file
+    }
+  }
+  return undefined;
 }
 
 export function describeAliyunMcpApiKeyHints(toolId: AliyunMcpToolId): string {
   const envNames = [
     ...ALIYUN_MCP_API_KEY_ENV_BY_TOOL[toolId],
     ALIYUN_MCP_API_KEY_ENV_GLOBAL,
+    `${ALIYUN_MCP_API_KEY_FILE_ENV} (file path)`,
+    "~/.openclaw/secrets/clawdbot-dingtalk/aliyun-mcp-api-key (file)",
     "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.apiKey",
     `channels.${DINGTALK_CHANNEL_ID}.aliyunMcp.apiKey`,
   ];

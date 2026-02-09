@@ -162,7 +162,7 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
           type: "object",
           properties: {
             blockStreaming: { type: "boolean", default: true },
-            streamBlockTextToSession: { type: "boolean", default: false },
+            streamBlockTextToSession: { type: "boolean", default: true },
           },
         },
         connection: {
@@ -319,9 +319,12 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
           `MCP 广场：${BAILIAN_MCP_MARKET_URL}`,
       },
       "aliyunMcp.apiKey": {
-        label: "DASHSCOPE API Key",
+        label: "百炼 MCP API Key",
         help:
-          "可选兜底鉴权。建议优先使用 DASHSCOPE_MCP_<TOOL>_API_KEY 环境变量。注意：部分 MCP 可能收费，费用会计入该 API Key 所属账号。",
+          "用于阿里云百炼 MCP 工具的鉴权（不是模型 provider 的 apiKey）。" +
+          "保存后会写入 channels.clawdbot-dingtalk.aliyunMcp.apiKey。" +
+          "如果 Control UI 保存失败，可把 key 写入 ~/.openclaw/secrets/clawdbot-dingtalk/aliyun-mcp-api-key（0600 权限），或用 OPENCLAW_DINGTALK_MCP_API_KEY_FILE 指定文件路径。" +
+          "建议优先使用 DASHSCOPE_MCP_<TOOL>_API_KEY 或 DASHSCOPE_API_KEY 环境变量。注意：部分 MCP 可能收费，费用会计入该 API Key 所属账号。",
         sensitive: true,
         advanced: true,
         order: 10,
@@ -446,18 +449,18 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
       },
       streaming: {
         label: "5. 流式输出",
-        help: "控制 block 增量与 final 回复的发送策略。",
+        help: "控制增量输出（block）与最终回复（final）的生成与发送策略。",
         order: 50,
       },
       "streaming.blockStreaming": {
-        label: "启用块流式回复",
-        help: "开启后实时发送 block 增量；关闭则只在最终阶段发送完整回复。",
+        label: "增量流式输出 (block)",
+        help: "开启后会产生并推送分段输出（更快看到内容）；关闭后尽量只输出最终回复（final）。",
         advanced: true,
         order: 10,
       },
       "streaming.streamBlockTextToSession": {
-        label: "直接发送 block 文本到会话",
-        help: "开启后 block 文本直接进入会话；关闭时仅 final 阶段输出完整文本。",
+        label: "将增量输出直接发到钉钉",
+        help: "开启后每段 block 都会立即发送到会话（可能多条消息）；关闭则先缓存 block，最后只发一条完整回复。",
         advanced: true,
         order: 20,
       },
@@ -987,9 +990,14 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
     defaultRuntime: {
       accountId: DEFAULT_ACCOUNT_ID,
       running: false,
+      connected: false,
       lastStartAt: null,
       lastStopAt: null,
+      lastConnectedAt: null,
+      lastDisconnect: null,
       lastError: null,
+      lastInboundAt: null,
+      lastOutboundAt: null,
     },
 
     probeAccount: async ({ account, timeoutMs }) => {
@@ -1003,20 +1011,30 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
       configured: isDingTalkAccountConfigured(account),
       credentialSource: account.credentialSource,
       running: runtime?.running ?? false,
+      connected: runtime?.connected ?? false,
       lastStartAt: runtime?.lastStartAt ?? null,
       lastStopAt: runtime?.lastStopAt ?? null,
+      lastConnectedAt: runtime?.lastConnectedAt ?? null,
+      lastDisconnect: runtime?.lastDisconnect ?? null,
       lastError: runtime?.lastError ?? null,
       mode: "stream",
+      lastInboundAt: runtime?.lastInboundAt ?? null,
+      lastOutboundAt: runtime?.lastOutboundAt ?? null,
     }),
 
     buildChannelSummary: ({ snapshot }) => ({
       configured: snapshot.configured ?? false,
       credentialSource: snapshot.credentialSource ?? "none",
       running: snapshot.running ?? false,
+      connected: snapshot.connected ?? false,
       mode: snapshot.mode ?? "stream",
       lastStartAt: snapshot.lastStartAt ?? null,
       lastStopAt: snapshot.lastStopAt ?? null,
+      lastConnectedAt: snapshot.lastConnectedAt ?? null,
+      lastDisconnect: snapshot.lastDisconnect ?? null,
       lastError: snapshot.lastError ?? null,
+      lastInboundAt: snapshot.lastInboundAt ?? null,
+      lastOutboundAt: snapshot.lastOutboundAt ?? null,
     }),
   },
 
@@ -1033,6 +1051,15 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
 
       log?.info?.(`[${account.accountId}] starting DingTalk stream provider`);
 
+      ctx.setStatus({
+        accountId: account.accountId,
+        running: true,
+        connected: false,
+        lastStartAt: Date.now(),
+        lastStopAt: null,
+        lastError: null,
+      });
+
       void ensureCoreWebSearchDisabledForAliyun({
         pluginConfig: {},
         clawConfig: cfg,
@@ -1044,12 +1071,30 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
         reason: "channel_start",
       });
 
-      return monitorDingTalkProvider({
+      const handle = await monitorDingTalkProvider({
         account,
         config: cfg,
         abortSignal,
         log: adaptLogger(log),
+        statusSink: (patch) => ctx.setStatus({ accountId: account.accountId, ...patch }),
       });
+
+      const waitForAbort = () =>
+        abortSignal.aborted
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              abortSignal.addEventListener("abort", () => resolve(), { once: true });
+            });
+
+      await waitForAbort();
+      log?.info?.(`[${account.accountId}] abort received; stopping DingTalk stream provider`);
+      try {
+        handle.stop();
+      } catch (err) {
+        log?.warn?.(
+          `[${account.accountId}] stop() failed: ${(err as Error)?.message ?? String(err)}`,
+        );
+      }
     },
   },
 };

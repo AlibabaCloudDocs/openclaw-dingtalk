@@ -11,6 +11,7 @@ import type { DingTalkActionCard, DingTalkChannelData } from "../types/channel-d
 import { createTokenManagerFromAccount, type TokenManager } from "./token-manager.js";
 import { chunkText, chunkMarkdownText, normalizeForTextMessage } from "../send/chunker.js";
 import { convertMarkdownForDingTalk } from "../send/markdown.js";
+import { deriveMarkdownTitle } from "../send/markdown-title.js";
 import {
   isLocalPath,
   normalizeLocalPath,
@@ -141,7 +142,8 @@ function buildMsgPayload(
     return {
       msgKey: "sampleMarkdown",
       msgParam: JSON.stringify({
-        title: "Clawdbot",
+        // DingTalk mobile push preview often uses title, so derive from actual content.
+        title: deriveMarkdownTitle(text),
         text,
       }),
     };

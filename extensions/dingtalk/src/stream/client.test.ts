@@ -3,6 +3,7 @@
  * Note: These tests focus on the startDingTalkStreamClient function behavior.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { EventEmitter } from "node:events";
 import type { ChatbotMessage } from "./types.js";
 
 // Store mock client instances for testing
@@ -25,13 +26,32 @@ vi.mock("dingtalk-stream", () => {
   class DWClient {
     socketCallBackResponse = vi.fn();
     sendGraphAPIResponse = vi.fn();
+    socket: any = null;
     connect = vi.fn().mockImplementation(() => {
       if (shouldConnectFail) {
         return Promise.reject(new Error("Connection failed"));
       }
+      const socket = new EventEmitter() as any;
+      socket.readyState = 0;
+      socket.ping = vi.fn();
+      socket.terminate = vi.fn(() => {
+        socket.readyState = 3;
+        socket.emit("close");
+      });
+      // Simulate successful WS open on next microtask.
+      queueMicrotask(() => {
+        socket.readyState = 1;
+        socket.emit("open");
+      });
+      this.socket = socket;
       return Promise.resolve(undefined);
     });
-    disconnect = vi.fn();
+    disconnect = vi.fn().mockImplementation(() => {
+      if (this.socket) {
+        this.socket.readyState = 3;
+        this.socket.emit("close");
+      }
+    });
 
     constructor(public options: any) {
       mockClientInstance = this;
@@ -61,17 +81,21 @@ describe("startDingTalkStreamClient", () => {
 
   it("creates and connects client", async () => {
     const onChatMessage = vi.fn();
+    const onConnectionStatus = vi.fn();
 
     const handle = await startDingTalkStreamClient({
       clientId: "test-client-id",
       clientSecret: "test-client-secret",
       onChatMessage,
+      onConnectionStatus,
     });
 
     expect(handle).toBeDefined();
     expect(handle.stop).toBeDefined();
     expect(mockClientInstance).not.toBeNull();
+    await new Promise((r) => setTimeout(r, 0));
     expect(mockClientInstance.connect).toHaveBeenCalled();
+    expect(onConnectionStatus).toHaveBeenCalled();
   });
 
   it("registers robot message callback", async () => {
@@ -108,6 +132,7 @@ describe("startDingTalkStreamClient", () => {
       clientSecret: "test-client-secret",
       onChatMessage,
     });
+    await new Promise((r) => setTimeout(r, 0));
 
     const robotCallback = registeredCallbacks.get(TOPIC_ROBOT);
     expect(robotCallback).toBeDefined();
@@ -148,6 +173,7 @@ describe("startDingTalkStreamClient", () => {
       clientSecret: "test-client-secret",
       onChatMessage,
     });
+    await new Promise((r) => setTimeout(r, 0));
 
     const robotCallback = registeredCallbacks.get(TOPIC_ROBOT);
 
@@ -182,6 +208,7 @@ describe("startDingTalkStreamClient", () => {
       onChatMessage,
       onCardCallback,
     });
+    await new Promise((r) => setTimeout(r, 0));
 
     const cardCallback = registeredCallbacks.get("/v1.0/card/instances/callback");
     expect(cardCallback).toBeDefined();
@@ -215,6 +242,7 @@ describe("startDingTalkStreamClient", () => {
       clientSecret: "test-client-secret",
       onChatMessage,
     });
+    await new Promise((r) => setTimeout(r, 0));
 
     const robotCallback = registeredCallbacks.get(TOPIC_ROBOT);
 
@@ -247,6 +275,7 @@ describe("startDingTalkStreamClient", () => {
       onChatMessage,
       logger: mockLogger,
     });
+    await new Promise((r) => setTimeout(r, 0));
 
     const robotCallback = registeredCallbacks.get(TOPIC_ROBOT);
 
@@ -273,6 +302,7 @@ describe("startDingTalkStreamClient", () => {
       clientSecret: "test-client-secret",
       onChatMessage,
     });
+    await new Promise((r) => setTimeout(r, 0));
 
     handle.stop();
 
@@ -290,19 +320,25 @@ describe("startDingTalkStreamClient", () => {
       logger: mockLogger,
     });
 
+    await new Promise((r) => setTimeout(r, 0));
     expect(mockLogger.info).toHaveBeenCalled();
   });
 
-  it("throws error on connection failure", async () => {
+  it("keeps running on connection failure (no throw)", async () => {
     shouldConnectFail = true;
     const onChatMessage = vi.fn();
+    const mockLogger = { debug: vi.fn(), info: vi.fn(), error: vi.fn(), warn: vi.fn() };
 
-    await expect(
-      startDingTalkStreamClient({
-        clientId: "test-client-id",
-        clientSecret: "test-client-secret",
-        onChatMessage,
-      })
-    ).rejects.toThrow("Connection failed");
+    const handle = await startDingTalkStreamClient({
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+      onChatMessage,
+      logger: mockLogger,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(handle).toBeDefined();
+    expect(mockClientInstance.connect).toHaveBeenCalled();
+    expect(mockLogger.error).toHaveBeenCalled();
+    handle.stop();
   });
 });

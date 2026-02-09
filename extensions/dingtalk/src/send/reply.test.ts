@@ -48,7 +48,7 @@ describe("sendReplyViaSessionWebhook", () => {
     expect(result.ok).toBe(true);
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.msgtype).toBe("markdown");
-    expect(body.markdown.title).toBe("Clawdbot");
+    expect(body.markdown.title).toBe("Title");
     expect(body.markdown.text).toContain("# Title");
   });
 
@@ -112,6 +112,24 @@ describe("sendReplyViaSessionWebhook", () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toBe("http_error");
     expect(result.status).toBe(400);
+  });
+
+  it("returns api_error when DingTalk returns errcode != 0 (HTTP 200)", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: () => Promise.resolve(JSON.stringify({ errcode: 400, errmsg: "bad request" })),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await sendReplyViaSessionWebhook(
+      "https://oapi.dingtalk.com/robot/sendBySession?session=xxx",
+      "Hello"
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("api_error");
+    expect(result.status).toBe(200);
   });
 
   it("returns error on fetch exception", async () => {

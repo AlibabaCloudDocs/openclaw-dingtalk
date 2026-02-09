@@ -100,7 +100,7 @@ export const StreamingConfigSchema = z.object({
   /** Enable block streaming for incremental replies */
   blockStreaming: z.boolean().default(true),
   /** Stream block text directly to sessionWebhook (instead of waiting final) */
-  streamBlockTextToSession: z.boolean().default(false),
+  streamBlockTextToSession: z.boolean().default(true),
 });
 
 /**
@@ -245,7 +245,7 @@ export const DingTalkConfigSchema = z.object({
   blockStreaming: z.boolean().default(true),
 
   /** Stream block text directly to sessionWebhook (instead of waiting final) */
-  streamBlockTextToSession: z.boolean().default(false),
+  streamBlockTextToSession: z.boolean().default(true),
 
   /** Thinking mode for Clawdbot */
   thinking: ThinkingLevelSchema.default("off"),

@@ -357,6 +357,102 @@ describe("monitorDingTalkProvider", () => {
     expect(body.text.content).toBe("最终答案");
   });
 
+  it("does not swallow reply when AI card payload exists but aiCard is disabled", async () => {
+    const runtime = getDingTalkRuntime();
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver(
+        {
+          text: "最终答案",
+          channelData: {
+            dingtalk: {
+              card: {
+                cardData: { msgContent: "should-not-block-text" },
+              },
+            },
+          },
+        },
+        { kind: "final" }
+      );
+      return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
+    });
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT, // aiCard.enabled=false in fixtures
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toBe("最终答案");
+  });
+
+  it("retries as plain text when markdown reply fails", async () => {
+    mockFetch.mockImplementationOnce(async () => ({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({ errcode: 400, errmsg: "bad request" }),
+    }));
+    mockFetch.mockImplementationOnce(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ errcode: 0, errmsg: "ok" }),
+    }));
+
+    const runtime = getDingTalkRuntime();
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "# 标题\n\n- 列表项" }, { kind: "final" });
+      return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
+    });
+
+    await monitorDingTalkProvider({
+      account: { ...BASIC_ACCOUNT, replyMode: "markdown" },
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const first = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    const second = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(first.msgtype).toBe("markdown");
+    expect(second.msgtype).toBe("text");
+  });
+
+  it("does not treat slash commands as media-only (final text should still be sent)", async () => {
+    const runtime = getDingTalkRuntime();
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "/models" }, { kind: "final" });
+      return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
+    });
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toBe("/models");
+  });
+
   it("streams block text immediately when streamBlockTextToSession is true", async () => {
     const runtime = getDingTalkRuntime();
     const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
@@ -787,6 +883,9 @@ describe("monitorDingTalkProvider", () => {
     const mediaApi = await import("./api/media.js");
     const mediaUploadApi = await import("./api/media-upload.js");
 
+    const imagePath = join(testStateDir, "image.png");
+    writeFileSync(imagePath, "fake");
+
     (pluginSdk.loadWebMedia as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       buffer: Buffer.from("fake-image"),
       contentType: "image/png",
@@ -816,7 +915,7 @@ describe("monitorDingTalkProvider", () => {
     const dispatcherOptions = call?.[0]?.dispatcherOptions;
 
     await dispatcherOptions.deliver(
-      { text: "./image.png" },
+      { text: imagePath },
       { kind: "final" }
     );
 

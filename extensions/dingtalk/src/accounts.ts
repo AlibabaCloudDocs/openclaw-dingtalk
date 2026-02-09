@@ -329,7 +329,7 @@ export function resolveDingTalkAccount(params: {
   const streamBlockTextToSession =
     pickBoolean(accountRecord, [["streaming", "streamBlockTextToSession"], ["streamBlockTextToSession"]]) ??
     pickBoolean(sectionRecord, [["streaming", "streamBlockTextToSession"], ["streamBlockTextToSession"]]) ??
-    false;
+    true;
   const thinking =
     (pickString(accountRecord, [["reply", "thinking"], ["thinking"]]) ??
       pickString(sectionRecord, [["reply", "thinking"], ["thinking"]]) ??

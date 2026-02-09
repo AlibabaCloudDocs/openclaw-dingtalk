@@ -53,6 +53,7 @@ export interface MonitorDingTalkOpts {
   config: ClawdbotConfig;
   abortSignal?: AbortSignal;
   log?: StreamLogger;
+  statusSink?: (patch: Record<string, unknown>) => void;
 }
 
 /**
@@ -77,6 +78,52 @@ const RESET_COMMAND_RE = /(?:^|\s)\/new(?=$|\s|:)/i;
 const BARE_NEW_COMMAND_RE = /^\/new$/i;
 const DINGTALK_BARE_NEW_PROMPT_ZH =
   "你正在开始一个新会话。请使用中文打招呼并保持 1-3 句，询问用户接下来想做什么；如果当前运行模型与 system prompt 里的 default_model 不同，请顺带说明默认模型。不要提及内部步骤、文件、工具或推理。";
+
+function inferMediaUrlFromStandaloneText(text: string): string | undefined {
+  const trimmed = text?.trim();
+  if (!trimmed) return undefined;
+
+  // Only treat as media when it's a single token. This prevents swallowing normal replies
+  // that start with "/" (commands) or include paths embedded in sentences.
+  if (/\s/.test(trimmed)) return undefined;
+
+  if (/^(?:MEDIA:|attachment:\/\/)/.test(trimmed)) {
+    return trimmed;
+  }
+  if (/^file:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+
+  let candidatePath = trimmed;
+  if (candidatePath.startsWith("~/")) {
+    candidatePath = path.join(os.homedir(), candidatePath.slice(2));
+  }
+
+  const isWindowsAbs = /^[A-Za-z]:[\\/]/.test(candidatePath);
+  const isUncPath = candidatePath.startsWith("\\\\");
+
+  // If it resolves to an existing path, treat as media.
+  // (existsSync is intentional: fast check, and loadWebMedia will validate further.)
+  if (
+    candidatePath.startsWith("/") ||
+    candidatePath.startsWith("./") ||
+    candidatePath.startsWith("../") ||
+    trimmed.startsWith("~/") ||
+    isWindowsAbs ||
+    isUncPath
+  ) {
+    const resolved = path.isAbsolute(candidatePath)
+      ? candidatePath
+      : (isWindowsAbs || isUncPath)
+        ? candidatePath
+        : path.resolve(candidatePath);
+    if (existsSync(resolved)) {
+      return resolved;
+    }
+  }
+
+  return undefined;
+}
 
 function injectChinesePromptForBareNewCommand(text: string): string {
   const trimmed = text.trim();
@@ -406,7 +453,7 @@ async function readSilentRunFallbackFromTranscript(params: {
 export async function monitorDingTalkProvider(
   opts: MonitorDingTalkOpts
 ): Promise<StreamClientHandle> {
-  const { account, config, abortSignal, log } = opts;
+  const { account, config, abortSignal, log, statusSink } = opts;
   const runtime = getDingTalkRuntime();
   const dispatchConfig = ensureDingTalkStreamingConfig(config);
 
@@ -433,20 +480,25 @@ export async function monitorDingTalkProvider(
   const verboseOverrides = new Map<string, VerboseOverride>();
   // Best-effort session-level thinking cache for one-shot restore.
   const thinkingLevels = new Map<string, ThinkLevel>();
-  // Serialize one-shot flows per sessionKey to avoid interleaving restore.
+  // Serialize per-session work to avoid overlapping Openclaw runs.
+  // If we call dispatchReply concurrently for the same DingTalk session, Openclaw may reject the
+  // second run as "already active", which triggers our silent fallback and causes:
+  // 1) DingTalk receives unrelated/stale fallback text
+  // 2) UI shows duplicates (fallback + later actual content)
   const oneshotChain = new Map<string, Promise<void>>();
 
   function enqueueSessionTask(sessionKey: string, task: () => Promise<void>): Promise<void> {
     const prev = oneshotChain.get(sessionKey) ?? Promise.resolve();
     const next = prev.then(task, task);
-    oneshotChain.set(
-      sessionKey,
-      next.finally(() => {
-        if (oneshotChain.get(sessionKey) === next) {
-          oneshotChain.delete(sessionKey);
-        }
-      })
-    );
+    // Track a "cleanup" promise in the chain, but swallow rejections so Node/Vitest
+    // won't treat the tracked promise as an unhandled rejection.
+    const tracked = next.finally(() => {
+      if (oneshotChain.get(sessionKey) === tracked) {
+        oneshotChain.delete(sessionKey);
+      }
+    });
+    tracked.catch(() => {});
+    oneshotChain.set(sessionKey, tracked);
     return next;
   }
 
@@ -558,8 +610,16 @@ export async function monitorDingTalkProvider(
       return { handled: false, ok: false, delivered: false };
     }
 
+    // If the agent explicitly provided a card payload but the account disabled cards,
+    // do not swallow the reply: fall back to regular text delivery.
     if (!account.aiCard.enabled) {
-      return { handled: true, ok: false, delivered: false, error: new Error("AI Card is disabled for this account.") };
+      if (card) {
+        log?.warn?.(
+          { sessionKey: params.sessionKey, kind: params.info.kind },
+          "AI card payload ignored because aiCard is disabled; falling back to text reply"
+        );
+      }
+      return { handled: false, ok: false, delivered: false, error: new Error("AI Card is disabled for this account.") };
     }
 
     const normalizeTextForCard = (text?: string): string => {
@@ -989,11 +1049,20 @@ export async function monitorDingTalkProvider(
     openPath: account.openPath,
     openBody,
     logger: log,
+    onConnectionStatus: (status) => {
+      if (status.connected) {
+        statusSink?.({ connected: true, lastConnectedAt: status.ts, lastError: null });
+      } else {
+        statusSink?.({ connected: false, lastDisconnect: status.ts });
+      }
+    },
     onChatMessage: async (chat: ChatbotMessage) => {
       try {
+        statusSink?.({ lastInboundAt: Date.now() });
         await handleInboundMessage(chat);
       } catch (err) {
         log?.error?.({ err: { message: (err as Error)?.message } }, "Handler error");
+        statusSink?.({ lastError: (err as Error)?.message ?? String(err) });
       }
     },
     onCardCallback: async (callback: CardCallbackMessage) => {
@@ -1001,6 +1070,7 @@ export async function monitorDingTalkProvider(
         await handleCardCallback(callback);
       } catch (err) {
         log?.error?.({ err: { message: (err as Error)?.message } }, "Card callback handler error");
+        statusSink?.({ lastError: (err as Error)?.message ?? String(err) });
       }
     },
   });
@@ -1080,7 +1150,8 @@ export async function monitorDingTalkProvider(
         : verboseOverrides.has(sessionKey)
           ? true
           : account.showToolStatus || account.showToolResult;
-    const runStartedAt = Date.now();
+    // Initialized early for fallback helpers, but reset again when the queued work actually starts.
+    let runStartedAt = Date.now();
     const aiCardAutoReplyEnabled =
       account.aiCard.enabled &&
       account.aiCard.autoReply &&
@@ -1187,6 +1258,7 @@ export async function monitorDingTalkProvider(
     };
     const markDelivered = (reason: string): void => {
       runDeliveryState.deliveredCount += 1;
+      statusSink?.({ lastOutboundAt: Date.now() });
       log?.debug?.(
         {
           sessionKey,
@@ -1246,6 +1318,7 @@ export async function monitorDingTalkProvider(
 
     log?.info?.(
       {
+        messageId: chat.messageId,
         eventType: chat.eventType,
         senderId: chat.senderId,
         senderName: chat.senderName,
@@ -1426,10 +1499,8 @@ export async function monitorDingTalkProvider(
         const explicitMediaUrl = payload.mediaUrl || payload.mediaUrls?.[0];
         const trimmedText = payload.text?.trim();
         const derivedMediaUrl =
-          !explicitMediaUrl &&
-            trimmedText &&
-            /^(?:\.{1,2}\/|\/|~\/|file:\/\/|MEDIA:|attachment:\/\/)/.test(trimmedText)
-            ? trimmedText
+          !explicitMediaUrl && trimmedText
+            ? inferMediaUrlFromStandaloneText(trimmedText)
             : undefined;
         const mediaUrl = explicitMediaUrl || derivedMediaUrl;
 
@@ -1539,7 +1610,7 @@ export async function monitorDingTalkProvider(
 
         // If the "text" is actually a standalone local path, treat it as media-only.
         const text =
-          skipText || (derivedMediaUrl && derivedMediaUrl === trimmedText)
+          skipText || (derivedMediaUrl && derivedMediaUrl === inferMediaUrlFromStandaloneText(trimmedText ?? ""))
             ? undefined
             : payload.text;
         if (!text?.trim()) {
@@ -1666,6 +1737,45 @@ export async function monitorDingTalkProvider(
             if (info.kind === "final") {
               blockTextBufferState.finalTextDelivered = true;
             }
+          } else {
+            // If DingTalk rejects a payload (common for markdown edge cases), retry once as plain text.
+            // This avoids the confusing situation where Openclaw shows a final answer but DingTalk receives nothing.
+            if (account.replyMode === "markdown") {
+              log?.warn?.(
+                {
+                  sessionKey,
+                  kind: info.kind,
+                  reason: textReplyResult.reason,
+                  status: textReplyResult.status,
+                },
+                "Markdown reply failed; retrying as text"
+              );
+              const fallbackReply = await sendReplyViaSessionWebhook(chat.sessionWebhook, processedText, {
+                replyMode: "text",
+                maxChars: account.maxChars,
+                logger: log,
+              });
+              if (fallbackReply.ok) {
+                markDelivered("text_reply_fallback_text");
+                if (info.kind === "final") {
+                  blockTextBufferState.finalTextDelivered = true;
+                }
+              } else if (info.kind === "final") {
+                // Best-effort: notify user that delivery failed.
+                await sendReplyViaSessionWebhook(
+                  chat.sessionWebhook,
+                  "⚠️ 本次回复发送失败（可能触发钉钉格式/频控限制或网络错误）。请稍后重试。",
+                  { replyMode: "text", maxChars: account.maxChars, logger: log }
+                );
+              }
+            } else if (info.kind === "final") {
+              // Best-effort: notify user that delivery failed.
+              await sendReplyViaSessionWebhook(
+                chat.sessionWebhook,
+                "⚠️ 本次回复发送失败（可能触发钉钉限制或网络错误）。请稍后重试。",
+                { replyMode: "text", maxChars: account.maxChars, logger: log }
+              );
+            }
           }
         }
 
@@ -1725,14 +1835,20 @@ export async function monitorDingTalkProvider(
       CommandAuthorized: true,
     });
 
-    // Dispatch to Clawdbot agent
+    // Dispatch to Clawdbot agent.
+    // Always serialize by sessionKey so multiple inbound DingTalk messages don't overlap.
+    // Otherwise Openclaw may drop the 2nd run (already-active), and we'd send an incorrect "silent fallback".
     try {
-      if (hasOnceThink) {
-        const desired = onceThink.thinkLevel as ThinkLevel;
-        const prev = thinkingLevels.get(sessionKey);
-        const restore = prev ?? "off";
+      await enqueueSessionTask(sessionKey, async () => {
+        // Set runStartedAt when we actually begin processing (after any queue wait),
+        // so transcript-based fallback doesn't accidentally capture prior runs.
+        runStartedAt = Date.now();
 
-        await enqueueSessionTask(sessionKey, async () => {
+        if (hasOnceThink) {
+          const desired = onceThink.thinkLevel as ThinkLevel;
+          const prev = thinkingLevels.get(sessionKey);
+          const restore = prev ?? "off";
+
           try {
             await dispatchReply({
               ctx: makeCommandCtx(`/think ${desired}`, "think-once-set"),
@@ -1765,8 +1881,9 @@ export async function monitorDingTalkProvider(
               log?.error?.({ err: { message: (err as Error)?.message }, sessionKey }, "Failed to restore think level");
             }
           }
-        });
-      } else {
+          return;
+        }
+
         let dispatchResult: unknown;
         try {
           dispatchResult = await dispatchReply({ ctx, dispatcherOptions });
@@ -1779,7 +1896,7 @@ export async function monitorDingTalkProvider(
         }
         await maybeSendBufferedBlockTextFinal(dispatchResult, dispatcherOptions);
         await maybeSendSilentRunFallback();
-      }
+      });
     } catch (err) {
       log?.error?.({ err: { message: (err as Error)?.message } }, "Agent dispatch error");
       // Send error message to user

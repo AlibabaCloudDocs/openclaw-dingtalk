@@ -229,10 +229,15 @@ function isToolError(result: unknown): boolean {
 }
 
 function makeMissingApiKeyPayload(toolId: AliyunMcpToolId) {
+  const toolName = ALIYUN_MCP_PLUGIN_TOOL_NAMES[toolId];
   return {
     ok: false,
-    error: "missing_dashscope_api_key",
-    message: `Missing API key for ${ALIYUN_MCP_PLUGIN_TOOL_NAMES[toolId]}. Configure one of: ${describeAliyunMcpApiKeyHints(toolId)}.`,
+    error: "missing_mcp_api_key",
+    message:
+      `百炼 MCP 工具缺少 API Key（${toolName}）。` +
+      `注意：不会读取 models.providers.dashscope.apiKey。` +
+      `请配置以下任一项：${describeAliyunMcpApiKeyHints(toolId)}。` +
+      `例如：openclaw config set channels.clawdbot-dingtalk.aliyunMcp.apiKey <API_KEY>`,
   };
 }
 

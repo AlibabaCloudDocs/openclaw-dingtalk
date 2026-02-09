@@ -217,7 +217,7 @@ describe("resolveDingTalkAccount", () => {
     expect(account.showToolStatus).toBe(false);
     expect(account.showToolResult).toBe(false);
     expect(account.blockStreaming).toBe(true);
-    expect(account.streamBlockTextToSession).toBe(false);
+    expect(account.streamBlockTextToSession).toBe(true);
     expect(account.isolateContextPerUserInGroup).toBe(false);
     expect(account.thinking).toBe("off");
     expect(account.aiCard.enabled).toBe(false);

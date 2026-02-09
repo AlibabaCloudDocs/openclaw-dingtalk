@@ -215,9 +215,7 @@ async function sendFileToWebhook(
     const payload = {
         msgtype: "file",
         file: {
-            mediaId,
-            fileName,
-            fileType: path.extname(fileName).slice(1) || "file",
+            media_id: mediaId,
         },
     };
 
@@ -259,8 +257,7 @@ async function sendVideoToWebhook(
     const payload = {
         msgtype: "video",
         video: {
-            videoMediaId: mediaId,
-            videoType: "mp4",
+            media_id: mediaId,
         },
     };
 
@@ -302,8 +299,10 @@ async function sendAudioToWebhook(
     const payload = {
         msgtype: "voice",
         voice: {
-            mediaId,
-            duration: "60000", // Default duration in ms
+            media_id: mediaId,
+            // DingTalk expects duration in seconds (< 60). We don't have the real duration here,
+            // so we provide a safe default for metadata.
+            duration: "59",
         },
     };
 

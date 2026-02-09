@@ -92,6 +92,12 @@ export interface StreamClientHandle {
   stop: () => void;
 }
 
+export interface StreamConnectionStatus {
+  connected: boolean;
+  ts: number;
+  reason?: string;
+}
+
 /**
  * Options for starting the stream client.
  * Note: apiBase, openPath, and openBody are no longer used as the SDK handles these internally.
@@ -108,6 +114,7 @@ export interface StreamClientOptions {
   logger?: StreamLogger;
   onChatMessage: (message: ChatbotMessage) => Promise<void>;
   onCardCallback?: (message: CardCallbackMessage) => Promise<void>;
+  onConnectionStatus?: (status: StreamConnectionStatus) => void;
 }
 
 /**

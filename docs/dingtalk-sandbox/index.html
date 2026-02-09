@@ -1,0 +1,1339 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DingTalk 插件白盒沙盘 | openclaw-dingtalk</title>
+    <meta
+      name="description"
+      content="用于理解 openclaw-dingtalk (钉钉) 插件组件与控制流/数据流的动态 HTML 沙盘。"
+    />
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand__title">DingTalk 插件白盒沙盘</div>
+          <div class="brand__sub">openclaw-dingtalk control-flow + data-flow</div>
+        </div>
+
+        <nav class="tabs" aria-label="Views">
+          <button class="tab is-active" data-view="tour" type="button">导览</button>
+          <button class="tab" data-view="sim" type="button">模拟器</button>
+          <button class="tab" data-view="index" type="button">代码索引</button>
+          <button class="tab" data-view="glossary" type="button">术语</button>
+        </nav>
+
+        <div class="status">
+          <div class="status__pill" id="status-pill">模型加载中…</div>
+        </div>
+      </header>
+
+      <main class="main">
+        <aside class="pane pane--left">
+          <section class="panel" id="panel-left"></section>
+        </aside>
+
+        <section class="stage" aria-label="Graph stage">
+          <div class="stage__canvas">
+            <svg
+              id="graph"
+              viewBox="0 0 1600 1000"
+              role="img"
+              aria-label="Openclaw × DingTalk plugin architecture graph"
+            ></svg>
+            <div class="toast" id="toast" aria-live="polite" aria-atomic="true"></div>
+          </div>
+        </section>
+
+        <aside class="pane pane--right">
+          <section class="panel" id="panel-right"></section>
+        </aside>
+      </main>
+
+      <footer class="footer">
+        <div class="footer__left">
+          <span class="muted">提示：若直接双击打开导致资源加载失败，在本目录运行</span>
+          <code class="inline">python -m http.server</code>
+          <span class="muted">并访问</span>
+          <code class="inline">http://localhost:8000/</code>
+        </div>
+        <div class="footer__right">
+          <span class="muted" id="build-id"></span>
+        </div>
+      </footer>
+    </div>
+
+    <!-- Embedded JSON: keeps file:// usable. Updated from model.json/scenarios.json. -->
+    <script type="application/json" id="oc-model">
+{
+  "meta": {
+    "titleZh": "DingTalk 插件白盒沙盘",
+    "subtitle": "openclaw-dingtalk control-flow + data-flow",
+    "version": "2026-02-07",
+    "repo": "openclaw-dingtalk",
+    "channelId": "clawdbot-dingtalk",
+    "npmPackage": "clawdbot-dingtalk"
+  },
+  "lanes": [
+    { "id": "dingtalk", "labelZh": "DingTalk 平台", "x": 0, "y": 0, "w": 380, "h": 1000 },
+    {
+      "id": "plugin",
+      "labelZh": "DingTalk 插件 (clawdbot-dingtalk)",
+      "x": 380,
+      "y": 0,
+      "w": 520,
+      "h": 1000
+    },
+    { "id": "openclaw", "labelZh": "Openclaw 核心", "x": 900, "y": 0, "w": 380, "h": 1000 },
+    {
+      "id": "mcp",
+      "labelZh": "Aliyun MCP (DashScope / Bailian)",
+      "x": 1280,
+      "y": 0,
+      "w": 320,
+      "h": 1000
+    }
+  ],
+  "nodes": [
+    {
+      "id": "dt_stream_callback",
+      "labelZh": "Stream 回调 (WebSocket)",
+      "kind": "external",
+      "lane": "dingtalk",
+      "x": 190,
+      "y": 150,
+      "w": 250,
+      "h": 78,
+      "summary": "DingTalk Stream 推送事件到机器人；SDK 触发 callback listener。"
+    },
+    {
+      "id": "dt_session_webhook",
+      "labelZh": "sessionWebhook (HTTP)",
+      "kind": "external",
+      "lane": "dingtalk",
+      "x": 190,
+      "y": 520,
+      "w": 250,
+      "h": 78,
+      "summary": "每条入站消息携带的会话级 webhook。插件用它回发 text/markdown/image/file。"
+    },
+    {
+      "id": "dt_openapi",
+      "labelZh": "DingTalk OpenAPI",
+      "kind": "external",
+      "lane": "dingtalk",
+      "x": 190,
+      "y": 820,
+      "w": 250,
+      "h": 78,
+      "summary": "需要 access_token 的主动调用：上传媒体、发送文件、AI Card 接口等。"
+    },
+
+    {
+      "id": "plugin_register",
+      "labelZh": "插件入口 register()",
+      "kind": "function",
+      "lane": "plugin",
+      "x": 760,
+      "y": 120,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/index.ts",
+      "symbol": "default export plugin.register",
+      "summary": "Openclaw 加载插件后调用：set runtime、registerChannel、registerTool(MCP)。",
+      "codeRef": {
+        "path": "extensions/dingtalk/index.ts",
+        "hintRg": "rg -n \"register\\(api: OpenClawPluginApi\\)\" extensions/dingtalk/index.ts",
+        "hintSed": "sed -n '1,120p' extensions/dingtalk/index.ts"
+      }
+    },
+    {
+      "id": "plugin_mcp_registrations",
+      "labelZh": "MCP 工具注册表",
+      "kind": "module",
+      "lane": "plugin",
+      "x": 760,
+      "y": 210,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/mcp/tools.ts",
+      "symbol": "createAliyunMcpRegistrations",
+      "summary": "按配置启用/禁用百炼 MCP；注册 webSearch / codeInterpreter / webParser / wan26Media 四个工具工厂。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/mcp/tools.ts",
+        "hintRg": "rg -n \"createAliyunMcpRegistrations|ALIYUN_MCP_PLUGIN_TOOL_NAMES\" extensions/dingtalk/src/mcp/tools.ts",
+        "hintSed": "sed -n '1,120p' extensions/dingtalk/src/mcp/tools.ts"
+      }
+    },
+    {
+      "id": "plugin_channel_plugin",
+      "labelZh": "ChannelPlugin 定义",
+      "kind": "module",
+      "lane": "plugin",
+      "x": 760,
+      "y": 315,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/channel.ts",
+      "symbol": "export const dingtalkPlugin",
+      "summary": "描述渠道能力、配置 schema、outbound 发送、gateway.startAccount 等。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/channel.ts",
+        "hintRg": "rg -n \"export const dingtalkPlugin\" extensions/dingtalk/src/channel.ts",
+        "hintSed": "sed -n '1,120p' extensions/dingtalk/src/channel.ts"
+      }
+    },
+    {
+      "id": "plugin_gateway_start",
+      "labelZh": "gateway.startAccount()",
+      "kind": "function",
+      "lane": "plugin",
+      "x": 760,
+      "y": 415,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/channel.ts",
+      "symbol": "dingtalkPlugin.gateway.startAccount",
+      "summary": "Openclaw 启动渠道时调用：最终进入 monitorDingTalkProvider() 建立 Stream 连接。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/channel.ts",
+        "hintRg": "rg -n \"gateway:\\s*\\{\\s*$|startAccount:\\s*async\" extensions/dingtalk/src/channel.ts",
+        "hintSed": "rg -n \"startAccount\" extensions/dingtalk/src/channel.ts"
+      }
+    },
+    {
+      "id": "plugin_runtime",
+      "labelZh": "runtime + 缓存",
+      "kind": "state",
+      "lane": "plugin",
+      "x": 760,
+      "y": 500,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/runtime.ts",
+      "symbol": "setDingTalkRuntime / getOrCreateTokenManager / cardStreamCache",
+      "summary": "保存 Openclaw runtime 引用；缓存 tokenManager 与 AI Card streaming state。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/runtime.ts",
+        "hintRg": "rg -n \"setDingTalkRuntime|getOrCreateTokenManager|tokenManagerCache|cardStreamCache\" extensions/dingtalk/src/runtime.ts",
+        "hintSed": "sed -n '1,220p' extensions/dingtalk/src/runtime.ts"
+      }
+    },
+    {
+      "id": "plugin_monitor",
+      "labelZh": "monitorDingTalkProvider()",
+      "kind": "module",
+      "lane": "plugin",
+      "x": 760,
+      "y": 600,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/monitor.ts",
+      "symbol": "monitorDingTalkProvider / handleInboundMessage / deliver(...)",
+      "summary": "入站主循环：过滤消息 -> 构造 ctx -> dispatch 到 Openclaw -> deliver 回钉钉（含 AI Card/媒体/降级）。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/monitor.ts",
+        "hintRg": "rg -n \"export async function monitorDingTalkProvider|function handleInboundMessage\\(\" extensions/dingtalk/src/monitor.ts",
+        "hintSed": "sed -n '220,520p' extensions/dingtalk/src/monitor.ts"
+      }
+    },
+
+    {
+      "id": "plugin_stream_client",
+      "labelZh": "Stream Client",
+      "kind": "module",
+      "lane": "plugin",
+      "x": 520,
+      "y": 200,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/stream/client.ts",
+      "symbol": "startDingTalkStreamClient",
+      "summary": "封装 dingtalk-stream SDK：注册 TOPIC_ROBOT/TOPIC_CARD 回调，ACK 并异步转交 handler。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/stream/client.ts",
+        "hintRg": "rg -n \"export async function startDingTalkStreamClient|registerCallbackListener\\(\" extensions/dingtalk/src/stream/client.ts",
+        "hintSed": "sed -n '1,220p' extensions/dingtalk/src/stream/client.ts"
+      }
+    },
+    {
+      "id": "plugin_message_parser",
+      "labelZh": "消息解析 + sessionKey",
+      "kind": "module",
+      "lane": "plugin",
+      "x": 520,
+      "y": 350,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/stream/message-parser.ts",
+      "symbol": "extractChatbotMessage / buildSessionKey",
+      "summary": "从不稳定的回调 schema 抽取 ChatbotMessage，并构造 SessionKey（DM vs group vs per-user）。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/stream/message-parser.ts",
+        "hintRg": "rg -n \"export function extractChatbotMessage|export function buildSessionKey\" extensions/dingtalk/src/stream/message-parser.ts",
+        "hintSed": "sed -n '1,260p' extensions/dingtalk/src/stream/message-parser.ts"
+      }
+    },
+    {
+      "id": "plugin_deliver",
+      "labelZh": "deliver(payload, kind)",
+      "kind": "function",
+      "lane": "plugin",
+      "x": 520,
+      "y": 710,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/monitor.ts",
+      "symbol": "dispatcherOptions.deliver",
+      "summary": "Openclaw 产出的 reply payload 在这里落地：AI Card/媒体协议/markdown 转换/sessionWebhook 发送。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/monitor.ts",
+        "hintRg": "rg -n \"const dispatcherOptions = \\{\\s*deliver: async\" extensions/dingtalk/src/monitor.ts",
+        "hintSed": "rg -n \"deliver: async\" extensions/dingtalk/src/monitor.ts"
+      }
+    },
+    {
+      "id": "plugin_send_reply",
+      "labelZh": "sessionWebhook Reply",
+      "kind": "module",
+      "lane": "plugin",
+      "x": 520,
+      "y": 860,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/send/reply.ts",
+      "symbol": "sendReplyViaSessionWebhook / sendImageViaSessionWebhook",
+      "summary": "把 text/markdown/image/file POST 到 sessionWebhook；长文自动分段；markdown 表格转 code block。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/send/reply.ts",
+        "hintRg": "rg -n \"sendReplyViaSessionWebhook|sendImageWithMediaIdViaSessionWebhook\" extensions/dingtalk/src/send/reply.ts",
+        "hintSed": "sed -n '1,220p' extensions/dingtalk/src/send/reply.ts"
+      }
+    },
+    {
+      "id": "plugin_media_protocol",
+      "labelZh": "媒体协议 [DING:*]",
+      "kind": "module",
+      "lane": "plugin",
+      "x": 760,
+      "y": 710,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/media-protocol.ts",
+      "symbol": "parseMediaProtocol / replaceMediaTags",
+      "summary": "解析并替换 AI 输出中的 [DING:IMAGE/FILE/VIDEO/AUDIO] 标签；上传后嵌入/或单独发送。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/media-protocol.ts",
+        "hintRg": "rg -n \"export function parseMediaProtocol|export async function replaceMediaTags\" extensions/dingtalk/src/media-protocol.ts",
+        "hintSed": "sed -n '1,220p' extensions/dingtalk/src/media-protocol.ts"
+      }
+    },
+    {
+      "id": "plugin_ai_card",
+      "labelZh": "AI Card 状态机",
+      "kind": "module",
+      "lane": "plugin",
+      "x": 760,
+      "y": 860,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/monitor.ts",
+      "symbol": "maybeHandleAICardDelivery",
+      "summary": "当开启 aiCard 时，将 reply payload 映射为卡片 create/deliver/stream/update；支持节流与 final 合成。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/monitor.ts",
+        "hintRg": "rg -n \"async function maybeHandleAICardDelivery\" extensions/dingtalk/src/monitor.ts",
+        "hintSed": "rg -n \"maybeHandleAICardDelivery\" extensions/dingtalk/src/monitor.ts"
+      }
+    },
+
+    {
+      "id": "oc_plugin_loader",
+      "labelZh": "Plugin Loader",
+      "kind": "module",
+      "lane": "openclaw",
+      "x": 1090,
+      "y": 120,
+      "w": 250,
+      "h": 78,
+      "file": "openclaw/src/plugins/loader.ts",
+      "symbol": "load plugins + call register(api)",
+      "summary": "加载 extensions 并调用插件的 register(api)/activate(api)。",
+      "codeRef": {
+        "path": "openclaw/src/plugins/loader.ts",
+        "hintRg": "rg -n \"const result = register\\(api\\)\" openclaw/src/plugins/loader.ts",
+        "hintSed": "sed -n '380,460p' openclaw/src/plugins/loader.ts"
+      }
+    },
+    {
+      "id": "oc_plugin_api",
+      "labelZh": "OpenClawPluginApi",
+      "kind": "api",
+      "lane": "openclaw",
+      "x": 1090,
+      "y": 230,
+      "w": 250,
+      "h": 78,
+      "file": "openclaw/src/plugins/types.ts",
+      "symbol": "OpenClawPluginApi",
+      "summary": "插件可调用的 API：registerChannel/registerTool/runtime/config/pluginConfig/logger 等。",
+      "codeRef": {
+        "path": "openclaw/src/plugins/types.ts",
+        "hintRg": "rg -n \"export type OpenClawPluginApi\" openclaw/src/plugins/types.ts",
+        "hintSed": "sed -n '220,320p' openclaw/src/plugins/types.ts"
+      }
+    },
+    {
+      "id": "oc_gateway",
+      "labelZh": "Gateway 启停",
+      "kind": "module",
+      "lane": "openclaw",
+      "x": 1090,
+      "y": 350,
+      "w": 250,
+      "h": 78,
+      "file": "openclaw/src/gateway/server-channels.ts",
+      "symbol": "startAccount(...)",
+      "summary": "根据配置启动渠道账号：调用 ChannelPlugin.gateway.startAccount 并管理 Abort/运行状态。",
+      "codeRef": {
+        "path": "openclaw/src/gateway/server-channels.ts",
+        "hintRg": "rg -n \"const task = startAccount\\(\" openclaw/src/gateway/server-channels.ts",
+        "hintSed": "sed -n '120,220p' openclaw/src/gateway/server-channels.ts"
+      }
+    },
+    {
+      "id": "oc_dispatcher",
+      "labelZh": "Reply Dispatcher",
+      "kind": "module",
+      "lane": "openclaw",
+      "x": 1090,
+      "y": 520,
+      "w": 250,
+      "h": 78,
+      "file": "openclaw/src/auto-reply/reply/provider-dispatcher.ts",
+      "symbol": "dispatchReplyWithBufferedBlockDispatcher",
+      "summary": "渠道把 ctx 交给 Openclaw 的 auto-reply 管线；它会处理 reply 路由/缓冲 block/final，再回调 deliver()。",
+      "codeRef": {
+        "path": "openclaw/src/auto-reply/reply/provider-dispatcher.ts",
+        "hintRg": "rg -n \"dispatchReplyWithBufferedBlockDispatcher\" openclaw/src/auto-reply/reply/provider-dispatcher.ts",
+        "hintSed": "sed -n '1,120p' openclaw/src/auto-reply/reply/provider-dispatcher.ts"
+      }
+    },
+    {
+      "id": "oc_agent_pipeline",
+      "labelZh": "Agent 管线",
+      "kind": "module",
+      "lane": "openclaw",
+      "x": 1090,
+      "y": 700,
+      "w": 250,
+      "h": 78,
+      "file": "openclaw/src/auto-reply/reply/dispatch-from-config.ts",
+      "symbol": "dispatchReplyFromConfig",
+      "summary": "解析会话与配置，执行 agent/模型、工具调用、去重与路由，再把 payload 送回 dispatcher。",
+      "codeRef": {
+        "path": "openclaw/src/auto-reply/reply/dispatch-from-config.ts",
+        "hintRg": "rg -n \"export async function dispatchReplyFromConfig\" openclaw/src/auto-reply/reply/dispatch-from-config.ts",
+        "hintSed": "sed -n '60,140p' openclaw/src/auto-reply/reply/dispatch-from-config.ts"
+      }
+    },
+    {
+      "id": "oc_tools",
+      "labelZh": "Tools / MCP",
+      "kind": "module",
+      "lane": "openclaw",
+      "x": 1090,
+      "y": 860,
+      "w": 250,
+      "h": 78,
+      "file": "openclaw/src/plugins/runtime/index.ts",
+      "symbol": "runtime.tools + tool invoke",
+      "summary": "工具注册/可选工具与调用结果回传（插件通过 api.registerTool 注册到这里）。",
+      "codeRef": {
+        "path": "openclaw/src/plugins/runtime/index.ts",
+        "hintRg": "rg -n \"registerTool\\(|tools\" openclaw/src/plugins/runtime/index.ts",
+        "hintSed": "sed -n '160,240p' openclaw/src/plugins/runtime/index.ts"
+      }
+    },
+
+    {
+      "id": "mcp_client",
+      "labelZh": "invokeAliyunMcpTool()",
+      "kind": "module",
+      "lane": "mcp",
+      "x": 1440,
+      "y": 200,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/mcp/client.ts",
+      "symbol": "invokeAliyunMcpTool",
+      "summary": "通过 DashScope MCP SSE endpoint 调用远端工具；处理超时/错误与返回结构。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/mcp/client.ts",
+        "hintRg": "rg -n \"export async function invokeAliyunMcpTool\" extensions/dingtalk/src/mcp/client.ts",
+        "hintSed": "sed -n '1,120p' extensions/dingtalk/src/mcp/client.ts"
+      }
+    },
+    {
+      "id": "mcp_web_search",
+      "labelZh": "MCP: WebSearch",
+      "kind": "tool",
+      "lane": "mcp",
+      "x": 1440,
+      "y": 360,
+      "w": 260,
+      "h": 78,
+      "summary": "联网搜索（百炼 MCP）。不可用时按“availability-first”降级。",
+      "tags": ["aliyun-mcp", "web"]
+    },
+    {
+      "id": "mcp_code_interpreter",
+      "labelZh": "MCP: Code Interpreter",
+      "kind": "tool",
+      "lane": "mcp",
+      "x": 1440,
+      "y": 520,
+      "w": 260,
+      "h": 78,
+      "summary": "远程代码解释器（百炼 MCP）。",
+      "tags": ["aliyun-mcp"]
+    },
+    {
+      "id": "mcp_web_parser",
+      "labelZh": "MCP: WebParser",
+      "kind": "tool",
+      "lane": "mcp",
+      "x": 1440,
+      "y": 680,
+      "w": 260,
+      "h": 78,
+      "summary": "网页抽取/解析（百炼 MCP）。",
+      "tags": ["aliyun-mcp", "web"]
+    },
+    {
+      "id": "mcp_wan26",
+      "labelZh": "MCP: Wan2.6 Media",
+      "kind": "tool",
+      "lane": "mcp",
+      "x": 1440,
+      "y": 840,
+      "w": 260,
+      "h": 78,
+      "file": "extensions/dingtalk/src/mcp/wan26-auto-reply.ts",
+      "symbol": "autoSendWan26MediaToDingtalk",
+      "summary": "通义万相2.6 生成图/视频；可选择自动回传到当前 DingTalk session。",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/mcp/wan26-auto-reply.ts",
+        "hintRg": "rg -n \"autoSendWan26MediaToDingtalk\" extensions/dingtalk/src/mcp/wan26-auto-reply.ts",
+        "hintSed": "sed -n '1,220p' extensions/dingtalk/src/mcp/wan26-auto-reply.ts"
+      },
+      "tags": ["aliyun-mcp", "media"]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_loader_register",
+      "from": "oc_plugin_loader",
+      "to": "plugin_register",
+      "flowType": "control",
+      "labelZh": "call register(api)",
+      "codeRef": {
+        "path": "openclaw/src/plugins/loader.ts",
+        "hintRg": "rg -n \"const result = register\\(api\\)\" openclaw/src/plugins/loader.ts"
+      }
+    },
+    {
+      "id": "e_register_runtime",
+      "from": "plugin_register",
+      "to": "plugin_runtime",
+      "flowType": "data",
+      "labelZh": "setDingTalkRuntime(api.runtime)",
+      "codeRef": {
+        "path": "extensions/dingtalk/index.ts",
+        "hintRg": "rg -n \"setDingTalkRuntime\" extensions/dingtalk/index.ts"
+      }
+    },
+    {
+      "id": "e_register_channel",
+      "from": "plugin_register",
+      "to": "oc_plugin_api",
+      "flowType": "control",
+      "labelZh": "api.registerChannel(dingtalkPlugin)",
+      "codeRef": {
+        "path": "extensions/dingtalk/index.ts",
+        "hintRg": "rg -n \"registerChannel\\(\\{ plugin: dingtalkPlugin \\}\\)\" extensions/dingtalk/index.ts"
+      }
+    },
+    {
+      "id": "e_register_mcp_build",
+      "from": "plugin_register",
+      "to": "plugin_mcp_registrations",
+      "flowType": "control",
+      "labelZh": "createAliyunMcpRegistrations(...)",
+      "codeRef": {
+        "path": "extensions/dingtalk/index.ts",
+        "hintRg": "rg -n \"createAliyunMcpRegistrations\" extensions/dingtalk/index.ts"
+      }
+    },
+    {
+      "id": "e_register_mcp_tools",
+      "from": "plugin_mcp_registrations",
+      "to": "oc_plugin_api",
+      "flowType": "control",
+      "labelZh": "api.registerTool(factory)",
+      "codeRef": {
+        "path": "extensions/dingtalk/index.ts",
+        "hintRg": "rg -n \"api\\.registerTool\" extensions/dingtalk/index.ts"
+      }
+    },
+
+    {
+      "id": "e_gateway_start_account",
+      "from": "oc_gateway",
+      "to": "plugin_gateway_start",
+      "flowType": "control",
+      "labelZh": "startAccount(ctx)",
+      "codeRef": {
+        "path": "openclaw/src/gateway/server-channels.ts",
+        "hintRg": "rg -n \"const task = startAccount\\(\" openclaw/src/gateway/server-channels.ts"
+      }
+    },
+    {
+      "id": "e_plugin_start_monitor",
+      "from": "plugin_gateway_start",
+      "to": "plugin_monitor",
+      "flowType": "control",
+      "labelZh": "monitorDingTalkProvider(...)",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/channel.ts",
+        "hintRg": "rg -n \"return monitorDingTalkProvider\\(\" extensions/dingtalk/src/channel.ts"
+      }
+    },
+    {
+      "id": "e_monitor_start_stream",
+      "from": "plugin_monitor",
+      "to": "plugin_stream_client",
+      "flowType": "control",
+      "labelZh": "startDingTalkStreamClient(...)",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/monitor.ts",
+        "hintRg": "rg -n \"const client = await startDingTalkStreamClient\" extensions/dingtalk/src/monitor.ts"
+      }
+    },
+    {
+      "id": "e_stream_receive",
+      "from": "dt_stream_callback",
+      "to": "plugin_stream_client",
+      "flowType": "control",
+      "labelZh": "TOPIC_ROBOT / TOPIC_CARD callback",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/stream/client.ts",
+        "hintRg": "rg -n \"registerCallbackListener\\(TOPIC_ROBOT|TOPIC_CARD_INSTANCE_CALLBACK\" extensions/dingtalk/src/stream/client.ts"
+      }
+    },
+    {
+      "id": "e_stream_parse",
+      "from": "plugin_stream_client",
+      "to": "plugin_message_parser",
+      "flowType": "data",
+      "labelZh": "extractChatbotMessage(raw)",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/stream/client.ts",
+        "hintRg": "rg -n \"extractChatbotMessage\" extensions/dingtalk/src/stream/client.ts"
+      }
+    },
+    {
+      "id": "e_parse_to_monitor",
+      "from": "plugin_message_parser",
+      "to": "plugin_monitor",
+      "flowType": "data",
+      "labelZh": "ChatbotMessage",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/monitor.ts",
+        "hintRg": "rg -n \"onChatMessage: async \\(chat\" extensions/dingtalk/src/monitor.ts"
+      }
+    },
+    {
+      "id": "e_monitor_build_sessionkey",
+      "from": "plugin_monitor",
+      "to": "plugin_message_parser",
+      "flowType": "data",
+      "labelZh": "buildSessionKey(chat, ...)",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/monitor.ts",
+        "hintRg": "rg -n \"buildSessionKey\\(\" extensions/dingtalk/src/monitor.ts"
+      }
+    },
+
+    {
+      "id": "e_monitor_dispatch",
+      "from": "plugin_monitor",
+      "to": "oc_dispatcher",
+      "flowType": "control",
+      "labelZh": "dispatchReplyWithBufferedBlockDispatcher(ctx)",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/monitor.ts",
+        "hintRg": "rg -n \"dispatchReplyWithBufferedBlockDispatcher\" extensions/dingtalk/src/monitor.ts"
+      }
+    },
+    {
+      "id": "e_dispatch_to_pipeline",
+      "from": "oc_dispatcher",
+      "to": "oc_agent_pipeline",
+      "flowType": "control",
+      "labelZh": "dispatchInboundMessageWithBufferedDispatcher",
+      "codeRef": {
+        "path": "openclaw/src/auto-reply/dispatch.ts",
+        "hintRg": "rg -n \"dispatchInboundMessageWithBufferedDispatcher\" openclaw/src/auto-reply/dispatch.ts"
+      }
+    },
+    {
+      "id": "e_pipeline_deliver",
+      "from": "oc_agent_pipeline",
+      "to": "plugin_deliver",
+      "flowType": "data",
+      "labelZh": "deliver(payload, kind=block/final)",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/monitor.ts",
+        "hintRg": "rg -n \"deliver called\" extensions/dingtalk/src/monitor.ts"
+      }
+    },
+
+    {
+      "id": "e_deliver_ai_card",
+      "from": "plugin_deliver",
+      "to": "plugin_ai_card",
+      "flowType": "control",
+      "labelZh": "maybeHandleAICardDelivery()",
+      "condition": "payload.channelData.dingtalk.card 或 aiCard autoReply",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/monitor.ts",
+        "hintRg": "rg -n \"maybeHandleAICardDelivery\\(\" extensions/dingtalk/src/monitor.ts"
+      }
+    },
+    {
+      "id": "e_ai_card_openapi",
+      "from": "plugin_ai_card",
+      "to": "dt_openapi",
+      "flowType": "control",
+      "labelZh": "card-instances create/deliver/stream/update",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/api/card-instances.ts",
+        "hintRg": "rg -n \"createCardInstance|deliverCardInstance|streamCardInstance|updateCardInstance\" extensions/dingtalk/src/api/card-instances.ts"
+      }
+    },
+
+    {
+      "id": "e_deliver_media_protocol",
+      "from": "plugin_deliver",
+      "to": "plugin_media_protocol",
+      "flowType": "control",
+      "labelZh": "parse/replace [DING:*] tags",
+      "condition": "hasMediaTags(text)",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/monitor.ts",
+        "hintRg": "rg -n \"hasMediaTags\\(|replaceMediaTags\\(|processMediaItems\\(\" extensions/dingtalk/src/monitor.ts"
+      }
+    },
+    {
+      "id": "e_media_upload_openapi",
+      "from": "plugin_media_protocol",
+      "to": "dt_openapi",
+      "flowType": "control",
+      "labelZh": "uploadMedia / uploadMediaToOAPI",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/send/media-sender.ts",
+        "hintRg": "rg -n \"uploadMedia\\(|uploadMediaToOAPI\\(\" extensions/dingtalk/src/send/media-sender.ts"
+      }
+    },
+    {
+      "id": "e_media_send_webhook",
+      "from": "plugin_media_protocol",
+      "to": "dt_session_webhook",
+      "flowType": "control",
+      "labelZh": "sendImageWithMediaId / msgtype=file",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/send/media-sender.ts",
+        "hintRg": "rg -n \"sendImageWithMediaIdViaSessionWebhook|msgtype: \\\"file\\\"\" extensions/dingtalk/src/send/media-sender.ts"
+      }
+    },
+
+    {
+      "id": "e_deliver_reply",
+      "from": "plugin_deliver",
+      "to": "plugin_send_reply",
+      "flowType": "control",
+      "labelZh": "sendReplyViaSessionWebhook(...)",
+      "condition": "allowText(kind=final 或 verbose 开启)",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/send/reply.ts",
+        "hintRg": "rg -n \"export async function sendReplyViaSessionWebhook\" extensions/dingtalk/src/send/reply.ts"
+      }
+    },
+    {
+      "id": "e_reply_to_webhook",
+      "from": "plugin_send_reply",
+      "to": "dt_session_webhook",
+      "flowType": "control",
+      "labelZh": "POST msgtype=text/markdown/image/file",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/send/reply.ts",
+        "hintRg": "rg -n \"fetch\\(sessionWebhook\" extensions/dingtalk/src/send/reply.ts"
+      }
+    },
+
+    {
+      "id": "e_tools_to_mcp",
+      "from": "oc_tools",
+      "to": "mcp_client",
+      "flowType": "control",
+      "labelZh": "invokeAliyunMcpTool(...)",
+      "condition": "tool = aliyun MCP (webSearch/...)",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/mcp/tools.ts",
+        "hintRg": "rg -n \"invokeAliyunMcpTool\" extensions/dingtalk/src/mcp/tools.ts"
+      }
+    },
+    {
+      "id": "e_mcp_websearch",
+      "from": "mcp_client",
+      "to": "mcp_web_search",
+      "flowType": "control",
+      "labelZh": "SSE -> webSearch endpoint",
+      "condition": "tools.webSearch.enabled"
+    },
+    {
+      "id": "e_mcp_code_interpreter",
+      "from": "mcp_client",
+      "to": "mcp_code_interpreter",
+      "flowType": "control",
+      "labelZh": "SSE -> codeInterpreter endpoint",
+      "condition": "tools.codeInterpreter.enabled"
+    },
+    {
+      "id": "e_mcp_webparser",
+      "from": "mcp_client",
+      "to": "mcp_web_parser",
+      "flowType": "control",
+      "labelZh": "SSE -> webParser endpoint",
+      "condition": "tools.webParser.enabled"
+    },
+    {
+      "id": "e_mcp_wan26",
+      "from": "mcp_client",
+      "to": "mcp_wan26",
+      "flowType": "control",
+      "labelZh": "SSE -> Wan2.6 endpoint",
+      "condition": "tools.wan26Media.enabled"
+    },
+    {
+      "id": "e_wan26_auto_send",
+      "from": "mcp_wan26",
+      "to": "dt_openapi",
+      "flowType": "control",
+      "labelZh": "autoSendToDingtalk: sendMediaByPath",
+      "condition": "wan26Media.autoSendToDingtalk && sessionKey 可解析 target",
+      "codeRef": {
+        "path": "extensions/dingtalk/src/mcp/wan26-auto-reply.ts",
+        "hintRg": "rg -n \"autoSendWan26MediaToDingtalk\\(\" extensions/dingtalk/src/mcp/wan26-auto-reply.ts"
+      }
+    }
+  ]
+}
+    </script>
+    <script type="application/json" id="oc-scenarios">
+{
+  "meta": {
+    "titleZh": "沙盘导览场景",
+    "version": "2026-02-07"
+  },
+  "scenarios": [
+    {
+      "id": "startup",
+      "titleZh": "启动链路: 插件注册 + MCP 工具注册",
+      "summaryZh": "Openclaw 加载插件，调用 register(api)，注册 DingTalk ChannelPlugin 与 Aliyun MCP tools。",
+      "initialState": {
+        "plugin": { "id": "clawdbot-dingtalk", "state": "loaded" },
+        "tools": [],
+        "runtimeBound": false
+      },
+      "steps": [
+        {
+          "id": "startup-1",
+          "titleZh": "Openclaw 调用插件 register(api)",
+          "bodyZh": "入口文件 `extensions/dingtalk/index.ts` 导出默认 plugin；Openclaw loader 会调用它的 `register(api)`。",
+          "focus": {
+            "nodes": ["oc_plugin_loader", "plugin_register"],
+            "edges": ["e_loader_register"]
+          },
+          "tokens": [
+            { "edge": "e_loader_register", "kind": "control", "label": "register(api)" }
+          ],
+          "statePatch": {
+            "plugin": { "state": "registering" }
+          }
+        },
+        {
+          "id": "startup-2",
+          "titleZh": "绑定 runtime (setDingTalkRuntime)",
+          "bodyZh": "插件把 `api.runtime` 保存到本地模块单例，后续 monitor 会用它把消息 dispatch 给 Openclaw。",
+          "focus": {
+            "nodes": ["plugin_register", "plugin_runtime"],
+            "edges": ["e_register_runtime"]
+          },
+          "tokens": [{ "edge": "e_register_runtime", "kind": "data", "label": "runtime" }],
+          "statePatch": {
+            "runtimeBound": true,
+            "runtime": { "channel": { "reply": "dispatchReplyWithBufferedBlockDispatcher(...)" } }
+          }
+        },
+        {
+          "id": "startup-3",
+          "titleZh": "registerChannel(dingtalkPlugin)",
+          "bodyZh": "插件将 `dingtalkPlugin` 注册为一个 channel；它携带 config schema / outbound / gateway.startAccount 等。",
+          "focus": {
+            "nodes": ["plugin_register", "plugin_channel_plugin", "oc_plugin_api"],
+            "edges": ["e_register_channel"]
+          },
+          "tokens": [{ "edge": "e_register_channel", "kind": "control", "label": "registerChannel" }],
+          "statePatch": {
+            "channels": [{ "id": "clawdbot-dingtalk", "mode": "stream" }]
+          }
+        },
+        {
+          "id": "startup-4",
+          "titleZh": "构建 MCP 注册表",
+          "bodyZh": "`createAliyunMcpRegistrations()` 会解析配置：哪些工具 enabled、API key 怎么取、以及 warnings。",
+          "focus": {
+            "nodes": ["plugin_register", "plugin_mcp_registrations"],
+            "edges": ["e_register_mcp_build"]
+          },
+          "tokens": [{ "edge": "e_register_mcp_build", "kind": "control", "label": "createAliyunMcpRegistrations" }],
+          "statePatch": {
+            "mcp": {
+              "apiKey": "****",
+              "tools": {
+                "webSearch": { "enabled": false },
+                "codeInterpreter": { "enabled": false },
+                "webParser": { "enabled": false },
+                "wan26Media": { "enabled": false }
+              }
+            }
+          }
+        },
+        {
+          "id": "startup-5",
+          "titleZh": "registerTool(factory) (按工具循环注册)",
+          "bodyZh": "对每个 MCP tool，插件会 `api.registerTool(factory, { name })`，使其进入 Openclaw 的 tools registry。",
+          "focus": {
+            "nodes": ["plugin_mcp_registrations", "oc_tools", "oc_plugin_api"],
+            "edges": ["e_register_mcp_tools"]
+          },
+          "tokens": [{ "edge": "e_register_mcp_tools", "kind": "control", "label": "registerTool" }],
+          "statePatch": {
+            "tools": [
+              "aliyun_web_search",
+              "aliyun_code_interpreter",
+              "aliyun_web_parser",
+              "aliyun_wan26_media"
+            ],
+            "plugin": { "state": "ready" }
+          }
+        }
+      ]
+    },
+
+    {
+      "id": "inbound_dm_text",
+      "titleZh": "入站: 私聊文本 -> Openclaw -> 回钉钉",
+      "summaryZh": "从 Stream 回调进入，解析 ChatbotMessage，构造 ctx 并 dispatch 到 Openclaw；Openclaw 通过 deliver(block/final) 回调发送。",
+      "initialState": {
+        "account": {
+          "accountId": "default",
+          "requireMention": true,
+          "requirePrefix": "",
+          "replyMode": "markdown",
+          "streamBlockTextToSession": true
+        },
+        "chat": null,
+        "sessionKey": "",
+        "ctx": null,
+        "deliveries": []
+      },
+      "steps": [
+        {
+          "id": "dm-1",
+          "titleZh": "Stream 回调触发 (TOPIC_ROBOT)",
+          "bodyZh": "SDK 收到 DingTalk push，插件 ACK 后异步进入 `onChatMessage(chat)`。",
+          "focus": { "nodes": ["dt_stream_callback", "plugin_stream_client"], "edges": ["e_stream_receive"] },
+          "tokens": [{ "edge": "e_stream_receive", "kind": "control", "label": "callback" }],
+          "statePatch": {
+            "rawStream": {
+              "headers": { "topic": "/v1.0/im/bot/messages/get", "eventType": "chatbot_message" },
+              "data": "{...json...}"
+            }
+          }
+        },
+        {
+          "id": "dm-2",
+          "titleZh": "解析 ChatbotMessage",
+          "bodyZh": "`extractChatbotMessage(raw)` 负责把不稳定 schema 归一化，拿到 text/sessionWebhook/chatType 等关键字段。",
+          "focus": { "nodes": ["plugin_stream_client", "plugin_message_parser"], "edges": ["e_stream_parse"] },
+          "tokens": [{ "edge": "e_stream_parse", "kind": "data", "label": "raw -> chat" }],
+          "statePatch": {
+            "chat": {
+              "chatType": "direct",
+              "conversationId": "cid_dm_001",
+              "senderId": "user001",
+              "text": "你好，帮我总结一下今天的待办",
+              "isInAtList": false,
+              "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?...",
+              "messageId": "mid_001"
+            }
+          }
+        },
+        {
+          "id": "dm-3",
+          "titleZh": "monitor: 过滤 + 生成 SessionKey",
+          "bodyZh": "DM 不走 @mention 过滤；随后 `buildSessionKey(chat, agentId, opts)` 生成 `agent:main:dingtalk:dm:<sender>`。",
+          "focus": {
+            "nodes": ["plugin_monitor", "plugin_message_parser"],
+            "edges": ["e_parse_to_monitor", "e_monitor_build_sessionkey"]
+          },
+          "tokens": [
+            { "edge": "e_parse_to_monitor", "kind": "data", "label": "chat" },
+            { "edge": "e_monitor_build_sessionkey", "kind": "data", "label": "sessionKey" }
+          ],
+          "statePatch": {
+            "sessionKey": "agent:main:dingtalk:dm:user001",
+            "filters": {
+              "selfMessage": false,
+              "allowlistBlocked": false,
+              "prefixBlocked": false,
+              "mentionBlocked": false
+            }
+          }
+        },
+        {
+          "id": "dm-4",
+          "titleZh": "构造 ctx (BodyForAgent/SessionKey/CommandAuthorized...)",
+          "bodyZh": "插件把 DingTalk 入站消息映射为 Openclaw MsgContext：`BodyForAgent` 会注入 DingTalk system prompt + senderContext。",
+          "focus": { "nodes": ["plugin_monitor"], "edges": [] },
+          "statePatch": {
+            "ctx": {
+              "Body": "你好，帮我总结一下今天的待办",
+              "BodyForAgent": "<DINGTALK_SYSTEM_PROMPT>\\n[Sender: user001]\\n你好，帮我总结一下今天的待办",
+              "SessionKey": "agent:main:dingtalk:dm:user001",
+              "Provider": "clawdbot-dingtalk",
+              "Surface": "clawdbot-dingtalk",
+              "To": "cid_dm_001",
+              "From": "user001",
+              "CommandAuthorized": false
+            }
+          }
+        },
+        {
+          "id": "dm-5",
+          "titleZh": "dispatch 到 Openclaw auto-reply 管线",
+          "bodyZh": "调用 `runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({ ctx, cfg, dispatcherOptions })`。",
+          "focus": { "nodes": ["plugin_monitor", "oc_dispatcher"], "edges": ["e_monitor_dispatch"] },
+          "tokens": [{ "edge": "e_monitor_dispatch", "kind": "control", "label": "dispatch(ctx)" }],
+          "statePatch": {
+            "openclaw": { "dispatch": "in-flight" }
+          }
+        },
+        {
+          "id": "dm-6",
+          "titleZh": "Openclaw 产生 block/final -> deliver() 回调",
+          "bodyZh": "Openclaw 会多次调用 `deliver(payload, { kind })`：kind=block 用于流式更新，kind=final 用于最终回复。",
+          "focus": {
+            "nodes": ["oc_agent_pipeline", "plugin_deliver"],
+            "edges": ["e_dispatch_to_pipeline", "e_pipeline_deliver"]
+          },
+          "tokens": [{ "edge": "e_pipeline_deliver", "kind": "data", "label": "payload" }],
+          "statePatch": {
+            "deliveries": [
+              { "kind": "block", "payload": { "text": "好的，我先帮你整理..." } },
+              { "kind": "final", "payload": { "text": "这是你今天的待办总结：\\n1) ..." } }
+            ]
+          }
+        },
+        {
+          "id": "dm-7",
+          "titleZh": "发送回钉钉 (sessionWebhook)",
+          "bodyZh": "deliver() 内部完成 directive 清理 + markdown 兼容处理，然后 `sendReplyViaSessionWebhook(webhook, text)`。",
+          "focus": {
+            "nodes": ["plugin_deliver", "plugin_send_reply", "dt_session_webhook"],
+            "edges": ["e_deliver_reply", "e_reply_to_webhook"]
+          },
+          "tokens": [
+            { "edge": "e_deliver_reply", "kind": "control", "label": "sendReply" },
+            { "edge": "e_reply_to_webhook", "kind": "control", "label": "POST" }
+          ],
+          "statePatch": {
+            "deliverResult": { "ok": true, "chunks": 1 }
+          }
+        }
+      ]
+    },
+
+    {
+      "id": "group_filters",
+      "titleZh": "入站: 群聊过滤 (prefix / @mention / allowlist)",
+      "summaryZh": "同样从 handleInboundMessage 进入，但会被配置驱动的过滤器提前 return。",
+      "initialState": {
+        "account": {
+          "allowFrom": [],
+          "requireMention": true,
+          "requirePrefix": "",
+          "mentionBypassUsers": [],
+          "isolateContextPerUserInGroup": false
+        },
+        "chat": {
+          "chatType": "group",
+          "conversationId": "cid_group_123",
+          "senderId": "staff001",
+          "text": "帮我查一下今天上海天气",
+          "isInAtList": false
+        },
+        "result": null
+      },
+      "steps": [
+        {
+          "id": "grp-1",
+          "titleZh": "requireMention 开启，但没有 @ 到机器人",
+          "bodyZh": "群聊时：若 `requireMention=true` 且 `requirePrefix` 未设置，则必须 `chat.isInAtList=true` 才会继续。",
+          "focus": { "nodes": ["plugin_monitor"], "edges": [] },
+          "statePatch": {
+            "result": { "accepted": false, "reason": "mention_required_not_met" }
+          }
+        },
+        {
+          "id": "grp-2",
+          "titleZh": "满足 @mention，进入 dispatch",
+          "bodyZh": "把 `chat.isInAtList` 置为 true 后，通过过滤并生成 group sessionKey：`agent:main:dingtalk:group:<cid>`。",
+          "focus": { "nodes": ["plugin_monitor", "plugin_message_parser", "oc_dispatcher"], "edges": ["e_monitor_build_sessionkey", "e_monitor_dispatch"] },
+          "tokens": [{ "edge": "e_monitor_dispatch", "kind": "control", "label": "dispatch" }],
+          "statePatch": {
+            "chat": { "isInAtList": true },
+            "sessionKey": "agent:main:dingtalk:group:cid_group_123",
+            "result": { "accepted": true, "reason": "passed_filters" }
+          }
+        },
+        {
+          "id": "grp-3",
+          "titleZh": "启用 requirePrefix 后，prefix 优先级更高",
+          "bodyZh": "当 `requirePrefix` 有值时，插件只检查 prefix，不再强制 @mention。",
+          "focus": { "nodes": ["plugin_monitor"], "edges": [] },
+          "statePatch": {
+            "account": { "requirePrefix": "/bot", "requireMention": true },
+            "chat": { "text": "帮我查一下今天上海天气", "isInAtList": false },
+            "result": { "accepted": false, "reason": "prefix_required_not_met" }
+          }
+        },
+        {
+          "id": "grp-4",
+          "titleZh": "消息命中 prefix，放行",
+          "bodyZh": "当文本以 `/bot` 开头时继续处理；可选开启 isolateContextPerUserInGroup 让 sessionKey 按 sender 细分。",
+          "focus": { "nodes": ["plugin_monitor", "plugin_message_parser"], "edges": ["e_monitor_build_sessionkey"] },
+          "statePatch": {
+            "account": { "isolateContextPerUserInGroup": true },
+            "chat": { "text": "/bot 帮我查一下今天上海天气" },
+            "sessionKey": "agent:main:dingtalk:group:cid_group_123:user:staff001",
+            "result": { "accepted": true, "reason": "passed_prefix" }
+          }
+        }
+      ]
+    },
+
+    {
+      "id": "media_protocol",
+      "titleZh": "出站: 媒体协议 [DING:*] + 上传与发送",
+      "summaryZh": "Agent 返回包含 [DING:IMAGE/FILE/VIDEO/AUDIO] 标签时，插件会上传并替换/拆分后发送。",
+      "initialState": {
+        "deliver": {
+          "kind": "final",
+          "payload": {
+            "text": "这是结果：\\n\\n[DING:IMAGE path=\\\"/tmp/result.png\\\"]\\n\\n[DING:FILE path=\\\"/tmp/report.pdf\\\" name=\\\"report.pdf\\\"]"
+          }
+        },
+        "processedText": "",
+        "mediaItems": []
+      },
+      "steps": [
+        {
+          "id": "med-1",
+          "titleZh": "deliver() 收到包含媒体标签的文本",
+          "bodyZh": "第一阶段会尝试把 [DING:IMAGE] 上传并替换为 markdown embedding `![...](mediaId)`。",
+          "focus": { "nodes": ["plugin_deliver", "plugin_media_protocol"], "edges": ["e_deliver_media_protocol"] },
+          "tokens": [{ "edge": "e_deliver_media_protocol", "kind": "control", "label": "replaceMediaTags" }]
+        },
+        {
+          "id": "med-2",
+          "titleZh": "上传图片并嵌入 mediaId",
+          "bodyZh": "上传得到 `mediaId` 后，文本内的图片标签会变成 `![Image](<mediaId>)`，以适配 DingTalk 的 sessionWebhook markdown 渲染。",
+          "focus": { "nodes": ["plugin_media_protocol", "dt_openapi", "dt_session_webhook"], "edges": ["e_media_upload_openapi", "e_media_send_webhook"] },
+          "tokens": [
+            { "edge": "e_media_upload_openapi", "kind": "control", "label": "upload" },
+            { "edge": "e_media_send_webhook", "kind": "control", "label": "send image" }
+          ],
+          "statePatch": {
+            "processedText": "这是结果：\\n\\n![Image](MEDIA_ID_123)\\n\\n[DING:FILE path=\\\"/tmp/report.pdf\\\" name=\\\"report.pdf\\\"]"
+          }
+        },
+        {
+          "id": "med-3",
+          "titleZh": "提取剩余媒体项 (File/Video/Audio)",
+          "bodyZh": "第二阶段会 parseMediaProtocol，把剩余媒体标签移出正文，转成 mediaItems 列表，后续逐条发送。",
+          "focus": { "nodes": ["plugin_media_protocol"], "edges": [] },
+          "statePatch": {
+            "processedText": "这是结果：\\n\\n![Image](MEDIA_ID_123)",
+            "mediaItems": [
+              { "type": "file", "path": "/tmp/report.pdf", "name": "report.pdf" }
+            ]
+          }
+        },
+        {
+          "id": "med-4",
+          "titleZh": "先发正文，再发媒体条目",
+          "bodyZh": "deliver() 会先把 `processedText` 作为 text/markdown 发到 sessionWebhook，然后再 `processMediaItems(mediaItems)` 逐条发送文件/视频/音频。",
+          "focus": { "nodes": ["plugin_send_reply", "dt_session_webhook"], "edges": ["e_deliver_reply", "e_reply_to_webhook", "e_media_send_webhook"] },
+          "tokens": [
+            { "edge": "e_reply_to_webhook", "kind": "control", "label": "POST markdown" },
+            { "edge": "e_media_send_webhook", "kind": "control", "label": "POST file" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "ai_card_stream",
+      "titleZh": "出站: AI Card 流式状态机",
+      "summaryZh": "当 aiCard.enabled 且 autoReply/templateId 满足时，reply 会被映射为卡片 create/deliver/stream/update。",
+      "initialState": {
+        "account": {
+          "aiCard": {
+            "enabled": true,
+            "autoReply": true,
+            "templateId": "TPL_ABC",
+            "updateThrottleMs": 800,
+            "callbackType": "STREAM"
+          }
+        },
+        "sessionKey": "agent:main:dingtalk:group:cid_group_123",
+        "cardStreamState": null
+      },
+      "steps": [
+        {
+          "id": "card-1",
+          "titleZh": "deliver(block): 触发 AI Card",
+          "bodyZh": "当 payload.kind=block 且 aiCard autoReply 开启时，`maybeHandleAICardDelivery()` 会开始创建卡片并发送 inputing 状态。",
+          "focus": { "nodes": ["plugin_deliver", "plugin_ai_card"], "edges": ["e_deliver_ai_card"] },
+          "tokens": [{ "edge": "e_deliver_ai_card", "kind": "control", "label": "maybeHandleAICardDelivery" }],
+          "statePatch": {
+            "deliver": { "kind": "block", "payload": { "text": "我正在生成卡片内容..." } }
+          }
+        },
+        {
+          "id": "card-2",
+          "titleZh": "create + deliver (首次投递)",
+          "bodyZh": "第一次进入会调用 createCardInstance + deliverCardInstance，把卡片投递到 openSpaceId 对应的会话。",
+          "focus": { "nodes": ["plugin_ai_card", "dt_openapi"], "edges": ["e_ai_card_openapi"] },
+          "tokens": [{ "edge": "e_ai_card_openapi", "kind": "control", "label": "create/deliver" }],
+          "statePatch": {
+            "cardStreamState": {
+              "outTrackId": "card_1700000000000_x",
+              "delivered": true,
+              "inputingStarted": true,
+              "lastUpdateAt": 1700000000000,
+              "accumulatedText": "我正在生成卡片内容..."
+            }
+          }
+        },
+        {
+          "id": "card-3",
+          "titleZh": "streaming (节流更新)",
+          "bodyZh": "后续 block 会累积文本；只有超过 updateThrottleMs 或 final 才会调用 streamCardInstance(isFull=true)。",
+          "focus": { "nodes": ["plugin_ai_card", "plugin_runtime", "dt_openapi"], "edges": ["e_ai_card_openapi"] },
+          "tokens": [{ "edge": "e_ai_card_openapi", "kind": "control", "label": "stream" }],
+          "statePatch": {
+            "deliver": { "kind": "block", "payload": { "text": "继续补全卡片..." } },
+            "cardStreamState": {
+              "accumulatedText": "我正在生成卡片内容...继续补全卡片..."
+            }
+          }
+        },
+        {
+          "id": "card-4",
+          "titleZh": "deliver(final): finalize + update finished",
+          "bodyZh": "final 到来时：streamCardInstance(isFinalize=true) + updateCardInstance(完成态)，并清理 cardStreamCache。",
+          "focus": { "nodes": ["plugin_ai_card", "plugin_runtime", "dt_openapi"], "edges": ["e_ai_card_openapi"] },
+          "tokens": [{ "edge": "e_ai_card_openapi", "kind": "control", "label": "finalize" }],
+          "statePatch": {
+            "deliver": { "kind": "final", "payload": { "text": "卡片完成！" } },
+            "cardStreamState": null
+          }
+        }
+      ]
+    },
+
+    {
+      "id": "card_callback",
+      "titleZh": "入站: AI Card 回调 -> /card 命令注入",
+      "summaryZh": "卡片按钮/交互产生 callback，插件把它包装为 `/card <actionId> <json>` 的消息并强制 commandAuthorized。",
+      "initialState": {
+        "callback": null,
+        "chat": null,
+        "ctx": null
+      },
+      "steps": [
+        {
+          "id": "cb-1",
+          "titleZh": "Stream 收到 card instance callback",
+          "bodyZh": "SDK topic `/v1.0/card/instances/callback` 触发；插件 ACK 后解析 callback。",
+          "focus": { "nodes": ["dt_stream_callback", "plugin_stream_client"], "edges": ["e_stream_receive"] },
+          "tokens": [{ "edge": "e_stream_receive", "kind": "control", "label": "card callback" }],
+          "statePatch": {
+            "callback": {
+              "actionId": "confirm",
+              "cardInstanceId": "CARD_INS_001",
+              "openSpaceId": "dtv1.card//IM_GROUP.cid_group_123",
+              "userId": "staff001"
+            }
+          }
+        },
+        {
+          "id": "cb-2",
+          "titleZh": "handleCardCallback: 合成一条 /card 消息",
+          "bodyZh": "插件构造 `text=/card <actionId> <payload-json>` 并调用 handleInboundMessage(bypassPrefix/bypassMention/forceCommandAuthorized)。",
+          "focus": { "nodes": ["plugin_monitor"], "edges": [] },
+          "statePatch": {
+            "chat": {
+              "chatType": "group",
+              "conversationId": "cid_group_123",
+              "senderId": "staff001",
+              "text": "/card confirm {\"cardInstanceId\":\"CARD_INS_001\",\"openSpaceId\":\"dtv1.card//IM_GROUP.cid_group_123\"}"
+            }
+          }
+        },
+        {
+          "id": "cb-3",
+          "titleZh": "dispatch 到 Openclaw (命令已授权)",
+          "bodyZh": "forceCommandAuthorized=true，使得 /card 命令无需依赖 allowlist/prefix/@mention 条件。",
+          "focus": { "nodes": ["plugin_monitor", "oc_dispatcher"], "edges": ["e_monitor_dispatch"] },
+          "tokens": [{ "edge": "e_monitor_dispatch", "kind": "control", "label": "dispatch /card" }],
+          "statePatch": {
+            "ctx": { "CommandAuthorized": true, "metadata": { "dingtalk": { "cardCallback": "<...>" } } }
+          }
+        }
+      ]
+    }
+  ]
+}
+    </script>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -18,6 +18,7 @@ export const ALIYUN_MCP_PLUGIN_TOOL_NAMES: Record<AliyunMcpToolId, string> = {
 };
 
 export const ALIYUN_MCP_API_KEY_ENV_GLOBAL = "DASHSCOPE_API_KEY";
+export const ALIYUN_MCP_API_KEY_FILE_ENV = "OPENCLAW_DINGTALK_MCP_API_KEY_FILE";
 
 export const ALIYUN_MCP_API_KEY_ENV_BY_TOOL: Record<AliyunMcpToolId, string[]> = {
   webSearch: ["DASHSCOPE_MCP_WEBSEARCH_API_KEY", "DASHSCOPE_MCP_WEB_SEARCH_API_KEY"],

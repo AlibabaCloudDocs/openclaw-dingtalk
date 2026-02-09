@@ -126,7 +126,7 @@ describe("sendProactiveMessage", () => {
     const messageCall = mockFetch.mock.calls[1];
     const body = JSON.parse(messageCall[1].body);
     expect(body.msgKey).toBe("sampleMarkdown");
-    expect(JSON.parse(body.msgParam).title).toBe("Clawdbot");
+    expect(JSON.parse(body.msgParam).title).toBe("Markdown");
   });
 
   it("normalizes markdown single line breaks before proactive send", async () => {
