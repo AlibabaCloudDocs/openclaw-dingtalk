@@ -2327,7 +2327,42 @@ const raw = fs.readFileSync(0, "utf8").trim();
 if (!raw) process.exit(1);
 try {
   const data = JSON.parse(raw);
-  process.exit(data?.service?.loaded ? 0 : 1);
+  const asBool = (v) => {
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0;
+    if (typeof v === "string") {
+      const s = v.trim().toLowerCase();
+      if (["true", "yes", "y", "1", "running", "active", "started", "up"].includes(s)) return true;
+      if (["false", "no", "n", "0", "stopped", "inactive", "down"].includes(s)) return false;
+      if (s === "loaded") return true;
+      if (s === "unloaded") return false;
+    }
+    return undefined;
+  };
+
+  // Different Openclaw versions/OSes may emit different shapes. Try to infer "running" first,
+  // then fall back to "loaded" for backward compatibility.
+  const svc = data?.service ?? data?.daemon ?? data?.gateway?.service ?? data?.gateway ?? {};
+
+  const running = asBool(
+    svc?.running ??
+      svc?.active ??
+      svc?.isRunning ??
+      svc?.status ??
+      svc?.state ??
+      data?.running ??
+      data?.active ??
+      data?.isRunning ??
+      data?.status ??
+      data?.state
+  );
+  if (running !== undefined) process.exit(running ? 0 : 1);
+
+  const pid = svc?.pid ?? data?.pid ?? data?.service?.pid;
+  if (typeof pid === "number" && pid > 0) process.exit(0);
+
+  const loaded = asBool(svc?.loaded ?? svc?.isLoaded ?? data?.loaded ?? data?.serviceLoaded);
+  process.exit(loaded ? 0 : 1);
 } catch {
   process.exit(1);
 }
@@ -2449,6 +2484,7 @@ configure_channel_dingtalk() {
 install_channel_plugin() {
     local channel="$1"
     local spec_override="${2:-}"
+    local no_restart="${3:-0}"
     local pkg=""
     pkg="$(get_channel_package "$channel")"
 
@@ -2498,7 +2534,9 @@ install_channel_plugin() {
     if [[ "$channel" == "$CHANNEL_DINGTALK" ]]; then
         seed_dingtalk_workspace_templates_if_missing || true
     fi
-    restart_gateway_if_running "$claw"
+    if [[ "$no_restart" != "1" ]]; then
+        restart_gateway_if_running "$claw"
+    fi
     return 0
 }
 
@@ -4560,7 +4598,9 @@ config_add_channel() {
     # Collect channel credentials
     case "$channel" in
         dingtalk)
-            configure_channel_dingtalk || return 1
+            if [[ -z "${CHANNEL_DINGTALK_CLIENT_ID:-}" || -z "${CHANNEL_DINGTALK_CLIENT_SECRET:-}" ]]; then
+                configure_channel_dingtalk || return 1
+            fi
             config_backup
             config_set "channels.clawdbot-dingtalk.enabled" "true"
             config_set "channels.clawdbot-dingtalk.clientId" "\"${CHANNEL_DINGTALK_CLIENT_ID}\""
@@ -4977,7 +5017,8 @@ run_channel_flow() {
             clear_npm_cache
 
             # Install the plugin
-            install_channel_plugin "$target" || return 1
+            # Delay gateway restart until after config is written (so it picks up new credentials/config).
+            install_channel_plugin "$target" "" "1" || return 1
 
             # Add config incrementally if config file exists
             if config_exists; then
@@ -4994,6 +5035,9 @@ run_channel_flow() {
                 generate_plugin_entry "$target"
                 echo ""
             fi
+
+            # Restart gateway at the very end so it picks up BOTH plugin + config changes.
+            restart_gateway_if_running
 
             clack_outro "${SUCCESS}渠道 $display_name 已添加${NC}"
             ;;
