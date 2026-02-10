@@ -724,6 +724,9 @@ UNINSTALL_PURGE="${CLAWDBOT_UNINSTALL_PURGE:-0}"  # 1 = delete all data and conf
 UNINSTALL_KEEP_CONFIG="${CLAWDBOT_UNINSTALL_KEEP_CONFIG:-0}"  # 1 = keep config files
 INSTALL_FILE_TOOLS="${CLAWDBOT_FILE_TOOLS:-1}"  # 1 = install file parsing tools (pdftotext, pandoc) - enabled by default
 INSTALL_PYTHON="${CLAWDBOT_PYTHON:-1}"  # 1 = install Python 3.12 - enabled by default
+GATEWAY_INSTALL_SYSTEM_SERVICE=0  # 1 when gateway install/start is fully handled by fallback logic
+NPM_VIEW_TIMEOUT_SECONDS="${CLAWDBOT_NPM_VIEW_TIMEOUT_SECONDS:-20}"  # timeout for npm view metadata requests
+NPM_CONFIG_QUERY_TIMEOUT_SECONDS="${CLAWDBOT_NPM_CONFIG_QUERY_TIMEOUT_SECONDS:-8}"  # timeout for npm config/prefix queries
 
 # China mirror URLs
 CN_NPM_REGISTRY="https://registry.npmmirror.com"
@@ -766,6 +769,60 @@ is_openclaw_version_blocked() {
     return 1
 }
 
+run_with_timeout() {
+    local timeout_seconds="${1:-0}"
+    shift || true
+
+    if [[ ! "$timeout_seconds" =~ ^[0-9]+$ ]] || [[ "$timeout_seconds" -le 0 ]]; then
+        "$@"
+        return $?
+    fi
+
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$timeout_seconds" "$@"
+        return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$timeout_seconds" "$@"
+        return $?
+    fi
+
+    # Portable bash fallback when timeout/gtimeout is unavailable.
+    local timeout_marker=""
+    timeout_marker="$(mktempfile)"
+
+    "$@" &
+    local cmd_pid=$!
+
+    (
+        sleep "$timeout_seconds"
+        echo "1" > "$timeout_marker"
+        kill -TERM "$cmd_pid" 2>/dev/null || true
+        sleep 1
+        kill -KILL "$cmd_pid" 2>/dev/null || true
+    ) &
+    local watchdog_pid=$!
+
+    local cmd_status=0
+    wait "$cmd_pid" || cmd_status=$?
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+
+    if [[ -s "$timeout_marker" ]]; then
+        return 124
+    fi
+
+    return "$cmd_status"
+}
+
+npm_view_quick() {
+    npm_config_fetch_timeout=10000 \
+    npm_config_fetch_retries=1 \
+    npm_config_fetch_retry_mintimeout=1000 \
+    npm_config_fetch_retry_maxtimeout=5000 \
+        run_with_timeout "${NPM_VIEW_TIMEOUT_SECONDS}" npm view "$@"
+}
+
 # Resolve the latest safe (non-blocked) openclaw version for a given dist-tag.
 # If the tagged version is blocked, fetches all published versions and picks
 # the highest one that is not blocked.
@@ -774,7 +831,7 @@ resolve_safe_openclaw_version() {
 
     # Fast path: tagged version is not blocked.
     local candidate=""
-    candidate="$(npm view "${CLAWDBOT_NPM_PKG}@${tag}" version --prefer-online 2>/dev/null || true)"
+    candidate="$(npm_view_quick "${CLAWDBOT_NPM_PKG}@${tag}" version --prefer-online 2>/dev/null || true)"
     if [[ -n "$candidate" ]] && ! is_openclaw_version_blocked "$candidate"; then
         echo "$candidate"
         return 0
@@ -783,7 +840,7 @@ resolve_safe_openclaw_version() {
     # Tagged version is blocked (or unavailable). Fetch the full version list
     # and pick the highest safe one.
     local all_versions=""
-    all_versions="$(npm view "${CLAWDBOT_NPM_PKG}" versions --json 2>/dev/null || true)"
+    all_versions="$(npm_view_quick "${CLAWDBOT_NPM_PKG}" versions --json 2>/dev/null || true)"
     if [[ -z "$all_versions" ]]; then
         return 1
     fi
@@ -1911,7 +1968,7 @@ fix_npm_permissions() {
     fi
 
     local npm_prefix
-    npm_prefix="$(npm config get prefix 2>/dev/null || true)"
+    npm_prefix="$(run_with_timeout "${NPM_CONFIG_QUERY_TIMEOUT_SECONDS}" npm config get prefix 2>/dev/null || true)"
     if [[ -z "$npm_prefix" ]]; then
         return 0
     fi
@@ -2201,7 +2258,7 @@ EOF
 # Install Openclaw
 resolve_beta_version() {
     local beta=""
-    beta="$(npm view "${CLAWDBOT_NPM_PKG}" dist-tags.beta 2>/dev/null || true)"
+    beta="$(npm_view_quick "${CLAWDBOT_NPM_PKG}" dist-tags.beta 2>/dev/null || true)"
     if [[ -z "$beta" || "$beta" == "undefined" || "$beta" == "null" ]]; then
         return 1
     fi
@@ -2230,7 +2287,7 @@ install_clawdbot() {
     fi
 
     local resolved_version=""
-    resolved_version="$(npm view "${package_name}@${CLAWDBOT_VERSION}" version 2>/dev/null || true)"
+    resolved_version="$(npm_view_quick "${package_name}@${CLAWDBOT_VERSION}" version 2>/dev/null || true)"
 
     local version_display=""
     if [[ -n "$resolved_version" ]]; then
@@ -2421,6 +2478,150 @@ try {
   process.exit(1);
 }
 ' >/dev/null 2>&1
+}
+
+is_systemd_pid1() {
+    [[ "$OS" == "linux" ]] || return 1
+    [[ -d "/run/systemd/system" ]] || return 1
+
+    local init_comm=""
+    init_comm="$(cat /proc/1/comm 2>/dev/null || true)"
+    [[ "$init_comm" == "systemd" ]]
+}
+
+should_use_root_nonsystemd_gateway_fallback() {
+    [[ "$OS" == "linux" ]] || return 1
+    is_root || return 1
+    is_systemd_pid1 && return 1
+    return 0
+}
+
+should_use_root_systemd_gateway_fallback() {
+    [[ "$OS" == "linux" ]] || return 1
+    is_root || return 1
+    is_systemd_pid1 || return 1
+    command -v systemctl &>/dev/null || return 1
+
+    # Root on many servers has no per-user systemd/DBus session.
+    if systemctl --user show-environment >/dev/null 2>&1; then
+        return 1
+    fi
+    return 0
+}
+
+start_gateway_background_for_root_nonsystemd() {
+    local claw="$1"
+    local home_dir="${HOME:-/root}"
+    local run_dir="${home_dir}/.openclaw/run"
+    local log_dir="${home_dir}/.openclaw/logs"
+    local pid_file="${run_dir}/openclaw-gateway.pid"
+    local log_file="${log_dir}/gateway.log"
+    local existing_pid=""
+
+    [[ -n "$claw" ]] || return 1
+
+    maybe_sudo mkdir -p "$run_dir" "$log_dir" || return 1
+
+    if [[ -f "$pid_file" ]]; then
+        existing_pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
+        if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+            return 0
+        fi
+        rm -f "$pid_file" 2>/dev/null || true
+    fi
+
+    nohup "$claw" gateway >>"$log_file" 2>&1 < /dev/null &
+    local pid=$!
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "$pid" > "$pid_file"
+        return 0
+    fi
+    return 1
+}
+
+install_gateway_systemd_service_for_root() {
+    local claw="$1"
+    local home_dir="${HOME:-/root}"
+    local workspace_dir="${home_dir}/.openclaw/workspace"
+    local service_file="/etc/systemd/system/openclaw-gateway.service"
+
+    [[ -n "$claw" ]] || return 1
+
+    maybe_sudo mkdir -p "$workspace_dir" || return 1
+
+    if ! maybe_sudo tee "$service_file" >/dev/null <<EOF
+[Unit]
+Description=Openclaw Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=${home_dir}
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=${workspace_dir}
+ExecStart=${claw} gateway
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    then
+        return 1
+    fi
+
+    maybe_sudo systemctl daemon-reload || return 1
+    maybe_sudo systemctl enable --now openclaw-gateway.service || return 1
+}
+
+install_gateway_service() {
+    local claw="$1"
+    local install_output=""
+
+    GATEWAY_INSTALL_SYSTEM_SERVICE=0
+    [[ -n "$claw" ]] || return 1
+
+    if should_use_root_nonsystemd_gateway_fallback; then
+        echo -e "${WARN}→${NC} 检测到当前环境未使用 systemd(PID 1)，改用后台进程模式启动 Gateway..."
+        if start_gateway_background_for_root_nonsystemd "$claw"; then
+            GATEWAY_INSTALL_SYSTEM_SERVICE=1
+            echo -e "${SUCCESS}✓${NC} Gateway 已在非 systemd 环境启动（日志: ${INFO}${HOME:-/root}/.openclaw/logs/gateway.log${NC}）"
+            return 0
+        fi
+        echo -e "${WARN}→${NC} 非 systemd 后台启动失败，尝试使用 openclaw 默认安装方式..."
+    fi
+
+    if should_use_root_systemd_gateway_fallback; then
+        echo -e "${WARN}→${NC} 检测到 root 用户缺少 systemd user 会话，改用系统级服务安装 Gateway..."
+        if install_gateway_systemd_service_for_root "$claw"; then
+            GATEWAY_INSTALL_SYSTEM_SERVICE=1
+            echo -e "${SUCCESS}✓${NC} Gateway 已安装为 systemd 系统服务（openclaw-gateway.service）"
+            return 0
+        fi
+        echo -e "${WARN}→${NC} 系统级服务安装失败，尝试使用 openclaw 默认安装方式..."
+    fi
+
+    if install_output="$("$claw" gateway install 2>&1)"; then
+        [[ -n "$install_output" ]] && echo "$install_output"
+        return 0
+    fi
+
+    if should_use_root_systemd_gateway_fallback && [[ "$install_output" == *"systemctl --user unavailable"* || "$install_output" == *"Failed to connect to bus"* ]]; then
+        echo -e "${WARN}→${NC} 检测到 systemctl --user 不可用，改用系统级服务安装 Gateway..."
+        if install_gateway_systemd_service_for_root "$claw"; then
+            GATEWAY_INSTALL_SYSTEM_SERVICE=1
+            echo -e "${SUCCESS}✓${NC} Gateway 已安装为 systemd 系统服务（openclaw-gateway.service）"
+            return 0
+        fi
+    fi
+
+    [[ -n "$install_output" ]] && echo "$install_output"
+    return 1
 }
 
 restart_gateway_if_running() {
@@ -2902,8 +3103,13 @@ CONFIGEOF
     # Auto-start gateway if any channel was configured
     if [[ "${has_any_channel:-0}" -eq 1 && -n "$claw" ]]; then
         echo -e "${WARN}→${NC} 安装并启动 Gateway 服务..."
-        "$claw" gateway install || echo -e "${WARN}→${NC} 服务安装失败"
-        "$claw" gateway start || echo -e "${WARN}→${NC} 启动失败，请手动执行: openclaw gateway start"
+        if install_gateway_service "$claw"; then
+            if [[ "${GATEWAY_INSTALL_SYSTEM_SERVICE:-0}" != "1" ]]; then
+                "$claw" gateway start || echo -e "${WARN}→${NC} 启动失败，请手动执行: openclaw gateway start"
+            fi
+        else
+            echo -e "${WARN}→${NC} 服务安装失败"
+        fi
         echo ""
     fi
 }
@@ -3159,7 +3365,7 @@ EOF
             "$claw" config set gateway.mode local || true
 
             echo -e "Running ${INFO}openclaw gateway install${NC}..."
-            "$claw" gateway install || true
+            install_gateway_service "$claw" || true
 
             echo -e "Running ${INFO}openclaw doctor --non-interactive --fix${NC}..."
             local doctor_ok=0
@@ -3194,6 +3400,25 @@ EOF
             else
                 echo -e "${WARN}→${NC} No TTY available; skipping configuration wizard."
                 echo -e "Run the script interactively or configure ${INFO}~/.openclaw/openclaw.json${NC} manually."
+            fi
+
+            # Gateway setup, config, and install for fresh installs
+            local claw="${CLAWDBOT_BIN:-}"
+            if [[ -z "$claw" ]]; then
+                claw="$(resolve_clawdbot_bin || true)"
+            fi
+            if [[ -n "$claw" ]]; then
+                echo -e "Running ${INFO}openclaw setup${NC}..."
+                "$claw" setup || true
+
+                echo -e "Running ${INFO}openclaw config set gateway.mode local${NC}..."
+                "$claw" config set gateway.mode local || true
+
+                echo -e "Running ${INFO}openclaw gateway install${NC}..."
+                install_gateway_service "$claw" || true
+            else
+                echo -e "${WARN}→${NC} Skipping gateway setup: ${INFO}openclaw${NC} not on PATH yet."
+                warn_clawdbot_not_found
             fi
         fi
     fi
@@ -3618,7 +3843,7 @@ get_latest_version() {
     fi
 
     # 使用 --prefer-online 绕过本地缓存，确保获取最新版本信息
-    version="$(npm view "${pkg}@${tag}" version --prefer-online 2>/dev/null || true)"
+    version="$(npm_view_quick "${pkg}@${tag}" version --prefer-online 2>/dev/null || true)"
     echo "$version"
 }
 
@@ -3711,11 +3936,28 @@ run_status_flow() {
 # ============================================
 
 stop_gateway_service() {
+    local pid_file="${HOME:-/root}/.openclaw/run/openclaw-gateway.pid"
+    local gateway_pid=""
+
     local claw=""
     claw="$(resolve_clawdbot_bin || true)"
     if [[ -n "$claw" ]]; then
         spinner_start "停止 Gateway 服务..."
         "$claw" gateway stop 2>/dev/null || true
+
+        # Fallback for non-systemd environments where gateway runs as a background process.
+        if [[ -f "$pid_file" ]]; then
+            gateway_pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
+            if [[ -n "$gateway_pid" ]] && kill -0 "$gateway_pid" 2>/dev/null; then
+                kill "$gateway_pid" 2>/dev/null || true
+                sleep 1
+                if kill -0 "$gateway_pid" 2>/dev/null; then
+                    kill -9 "$gateway_pid" 2>/dev/null || true
+                fi
+            fi
+            rm -f "$pid_file" 2>/dev/null || true
+        fi
+
         spinner_stop 0 "Gateway 服务已停止"
     fi
 }
@@ -3781,11 +4023,116 @@ uninstall_npm_packages() {
     spinner_stop 0 "npm/pnpm 包已卸载"
 }
 
+extract_openclaw_git_wrapper_repo_dir() {
+    local wrapper="$HOME/.local/bin/openclaw"
+    local line=""
+
+    if [[ ! -f "$wrapper" ]]; then
+        return 1
+    fi
+
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^exec[[:space:]]+node[[:space:]]+\"(.+)/dist/entry\.js\"[[:space:]]+\"\\\$@\"$ ]]; then
+            echo "${BASH_REMATCH[1]}"
+            return 0
+        fi
+    done < "$wrapper"
+
+    return 1
+}
+
+openclaw_git_checkout_candidates() {
+    local wrapper_repo=""
+    wrapper_repo="$(extract_openclaw_git_wrapper_repo_dir || true)"
+    if [[ -n "$wrapper_repo" ]]; then
+        echo "$wrapper_repo"
+    fi
+
+    if [[ -n "${GIT_DIR:-}" ]]; then
+        echo "$GIT_DIR"
+    fi
+
+    if [[ -n "${GIT_DIR_DEFAULT:-}" ]]; then
+        echo "$GIT_DIR_DEFAULT"
+    fi
+
+    if [[ -n "${HOME:-}" ]]; then
+        echo "$HOME/openclaw"
+    fi
+}
+
+is_openclaw_git_checkout_dir() {
+    local dir="${1%/}"
+    local pkg=""
+
+    if [[ -z "$dir" || ! -d "$dir" ]]; then
+        return 1
+    fi
+    if [[ ! -d "$dir/.git" ]]; then
+        return 1
+    fi
+
+    pkg="$dir/package.json"
+    if [[ -f "$pkg" ]] && grep -Eq '"name"[[:space:]]*:[[:space:]]*"(openclaw|clawdbot)"' "$pkg" 2>/dev/null; then
+        return 0
+    fi
+
+    if [[ -f "$dir/pnpm-workspace.yaml" && -f "$dir/dist/entry.js" ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+cleanup_git_checkout_directories() {
+    local seen="|"
+    local dir=""
+    local normalized=""
+    local removed="0"
+    local blocked="0"
+
+    while IFS= read -r dir; do
+        normalized="${dir%/}"
+        if [[ -z "$normalized" ]]; then
+            continue
+        fi
+        case "$seen" in
+            *"|$normalized|"*) continue ;;
+        esac
+        seen="${seen}${normalized}|"
+
+        if ! is_openclaw_git_checkout_dir "$normalized"; then
+            continue
+        fi
+
+        rm -rf "$normalized" 2>/dev/null || true
+        if [[ -d "$normalized" ]]; then
+            blocked="1"
+            echo -e "${WARN}→${NC} 无法删除 Git 安装目录: ${INFO}${normalized}${NC}"
+        else
+            removed="1"
+        fi
+    done < <(openclaw_git_checkout_candidates)
+
+    if [[ "$removed" == "1" ]]; then
+        echo -e "${SUCCESS}✓${NC} Git 安装目录已清理"
+    elif [[ "$blocked" == "1" ]]; then
+        echo -e "${WARN}→${NC} Git 安装目录部分未删除（可能需要更高权限）"
+    else
+        echo -e "${MUTED}○${NC} 未发现 Git 安装目录残留"
+    fi
+}
+
 has_openclaw_residuals() {
     local npm_root=""
     local npm_bin=""
+    local pnpm_root=""
+    local git_dir=""
     npm_root="$(npm root -g 2>/dev/null || true)"
     npm_bin="$(npm_global_bin_dir 2>/dev/null || true)"
+    if command -v pnpm &>/dev/null; then
+        pnpm_root="$(pnpm root -g 2>/dev/null || true)"
+    fi
 
     if [[ -d "$HOME/.openclaw" ]]; then
         return 0
@@ -3813,6 +4160,12 @@ has_openclaw_residuals() {
     if compgen -G "/tmp/openclaw-plugin-*" >/dev/null; then
         return 0
     fi
+    if compgen -G "/tmp/jiti/*openclaw*" >/dev/null; then
+        return 0
+    fi
+    if compgen -G "/tmp/jiti/*clawdbot*" >/dev/null; then
+        return 0
+    fi
 
     if [[ -n "$npm_root" ]]; then
         if [[ -d "${npm_root}/openclaw" || -d "${npm_root}/clawdbot" || -d "${npm_root}/clawdbot-dingtalk" ]]; then
@@ -3824,6 +4177,36 @@ has_openclaw_residuals() {
             return 0
         fi
     fi
+    if [[ -n "$pnpm_root" ]]; then
+        if [[ -d "${pnpm_root}/openclaw" || -d "${pnpm_root}/clawdbot" || -d "${pnpm_root}/clawdbot-dingtalk" ]]; then
+            return 0
+        fi
+    fi
+
+    if [[ -f "$HOME/Library/LaunchAgents/com.openclaw.gateway.plist" || -f "$HOME/Library/LaunchAgents/com.clawdbot.gateway.plist" || -f "$HOME/Library/LaunchAgents/com.moltbot.gateway.plist" ]]; then
+        return 0
+    fi
+    if [[ -f "$HOME/Library/LaunchDaemons/com.openclaw.gateway.plist" || -f "$HOME/Library/LaunchDaemons/com.clawdbot.gateway.plist" || -f "$HOME/Library/LaunchDaemons/com.moltbot.gateway.plist" ]]; then
+        return 0
+    fi
+    if [[ -f "/Library/LaunchAgents/com.openclaw.gateway.plist" || -f "/Library/LaunchAgents/com.clawdbot.gateway.plist" || -f "/Library/LaunchAgents/com.moltbot.gateway.plist" ]]; then
+        return 0
+    fi
+    if [[ -f "/Library/LaunchDaemons/com.openclaw.gateway.plist" || -f "/Library/LaunchDaemons/com.clawdbot.gateway.plist" || -f "/Library/LaunchDaemons/com.moltbot.gateway.plist" ]]; then
+        return 0
+    fi
+
+    if command -v launchctl &>/dev/null; then
+        if launchctl list 2>/dev/null | grep -Eq "com\\.(openclaw|clawdbot|moltbot)\\.gateway"; then
+            return 0
+        fi
+    fi
+
+    while IFS= read -r git_dir; do
+        if is_openclaw_git_checkout_dir "$git_dir"; then
+            return 0
+        fi
+    done < <(openclaw_git_checkout_candidates)
 
     return 1
 }
@@ -3837,6 +4220,7 @@ cleanup_clawdbot_directories() {
         rm -rf ~/.openclaw 2>/dev/null || true
         rm -rf ~/clawd ~/clawd-* 2>/dev/null || true
         spinner_stop 0 "数据已清理"
+        cleanup_git_checkout_directories
         return 0
     fi
 
@@ -3890,18 +4274,41 @@ cleanup_service_files() {
 
     # macOS launchd
     local launchd_cleaned="0"
+    local launchd_blocked="0"
+    if command -v launchctl &>/dev/null; then
+        launchctl remove com.openclaw.gateway >/dev/null 2>&1 || true
+        launchctl remove com.clawdbot.gateway >/dev/null 2>&1 || true
+        launchctl remove com.moltbot.gateway >/dev/null 2>&1 || true
+    fi
     for plist in \
         "$HOME/Library/LaunchAgents/com.moltbot.gateway.plist" \
-        "$HOME/Library/LaunchAgents/com.openclaw.gateway.plist"
+        "$HOME/Library/LaunchAgents/com.clawdbot.gateway.plist" \
+        "$HOME/Library/LaunchAgents/com.openclaw.gateway.plist" \
+        "$HOME/Library/LaunchDaemons/com.moltbot.gateway.plist" \
+        "$HOME/Library/LaunchDaemons/com.clawdbot.gateway.plist" \
+        "$HOME/Library/LaunchDaemons/com.openclaw.gateway.plist" \
+        "/Library/LaunchAgents/com.moltbot.gateway.plist" \
+        "/Library/LaunchAgents/com.clawdbot.gateway.plist" \
+        "/Library/LaunchAgents/com.openclaw.gateway.plist" \
+        "/Library/LaunchDaemons/com.moltbot.gateway.plist" \
+        "/Library/LaunchDaemons/com.clawdbot.gateway.plist" \
+        "/Library/LaunchDaemons/com.openclaw.gateway.plist"
     do
         if [[ -f "$plist" ]]; then
             launchctl unload "$plist" 2>/dev/null || true
             rm -f "$plist" 2>/dev/null || true
-            launchd_cleaned="1"
+            if [[ -f "$plist" ]]; then
+                launchd_blocked="1"
+            else
+                launchd_cleaned="1"
+            fi
         fi
     done
     if [[ "$launchd_cleaned" == "1" ]]; then
         echo -e "${SUCCESS}✓${NC} launchd 服务已清理"
+    fi
+    if [[ "$launchd_blocked" == "1" ]]; then
+        echo -e "${WARN}→${NC} 部分 launchd 服务文件未删除（可能需要 sudo）"
     fi
 }
 
@@ -4884,8 +5291,10 @@ repair_reset_gateway() {
 
     spinner_start "重置 Gateway..."
     "$claw" gateway stop 2>/dev/null || true
-    "$claw" gateway install 2>/dev/null || true
-    "$claw" gateway start 2>/dev/null || true
+    install_gateway_service "$claw" >/dev/null 2>&1 || true
+    if [[ "${GATEWAY_INSTALL_SYSTEM_SERVICE:-0}" != "1" ]]; then
+        "$claw" gateway start 2>/dev/null || true
+    fi
     spinner_stop 0 "Gateway 已重置"
 }
 
@@ -5063,7 +5472,7 @@ show_main_menu() {
         "更新配置 (Configure)         - 运行配置向导"
         "查看状态 (Status)            - 显示安装状态"
         "修复问题 (Repair)            - 诊断和修复问题"
-        "完全卸载 (Uninstall)         - 卸载 Openclaw"
+        "完全卸载 (Uninstall)         - 卸载 Openclaw 并清理残留"
         "退出 (Exit)"
     )
 
@@ -5076,7 +5485,7 @@ show_main_menu() {
         2) ACTION="configure" ;;
         3) ACTION="status" ;;
         4) ACTION="repair" ;;
-        5) ACTION="uninstall" ;;
+        5) ACTION="uninstall"; UNINSTALL_PURGE=1; UNINSTALL_KEEP_CONFIG=0 ;;
         6)
             echo ""
             echo -e "${MUTED}再见！${NC}"

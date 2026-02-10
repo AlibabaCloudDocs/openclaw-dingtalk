@@ -44,6 +44,7 @@ config_exists() { return 0; }
 config_backup() { :; }
 config_set() { :; }
 config_delete() { :; }
+run_with_timeout() { local _timeout="${1:-0}"; shift || true; "$@"; }
 
 ## ============================================================
 ## Regression 1: --channel-add dingtalk should NOT prompt twice
@@ -214,3 +215,154 @@ if [[ -n "$NPM_INSTALL_CAPTURED_SPEC" ]]; then
 fi
 
 pass "openclaw 2026.2.6* is skipped/blocked during install/upgrade"
+
+## ============================================================
+## Regression 4: root install should fallback to system service
+## when systemctl --user bus is unavailable
+## ============================================================
+
+fake_root_claw="${tmp_dir}/fake-openclaw-root"
+fake_root_bin="${tmp_dir}/root-fallback-bin"
+mkdir -p "$fake_root_bin"
+
+cat >"$fake_root_claw" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "gateway" && "${2:-}" == "install" ]]; then
+  echo "Gateway service check failed: Error: systemctl --user unavailable: Failed to connect to bus: No such file or directory" >&2
+  exit 1
+fi
+
+exit 0
+EOF
+chmod +x "$fake_root_claw"
+
+cat >"${fake_root_bin}/systemctl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "--user" ]]; then
+  exit 1
+fi
+
+exit 0
+EOF
+chmod +x "${fake_root_bin}/systemctl"
+
+ORIGINAL_PATH="$PATH"
+PATH="${fake_root_bin}:${PATH}"
+
+ROOT_SYSTEMD_FALLBACK_CALLED=0
+install_gateway_systemd_service_for_root() {
+  ROOT_SYSTEMD_FALLBACK_CALLED=$((ROOT_SYSTEMD_FALLBACK_CALLED + 1))
+  return 0
+}
+is_root() { return 0; }
+is_systemd_pid1() { return 0; }
+OS="linux"
+
+install_gateway_service "$fake_root_claw" >/dev/null 2>&1 || fail "expected install_gateway_service to succeed via root/systemd fallback"
+
+if [[ "$ROOT_SYSTEMD_FALLBACK_CALLED" -ne 1 ]]; then
+  fail "expected root/systemd fallback to be used once, got: $ROOT_SYSTEMD_FALLBACK_CALLED"
+fi
+
+if [[ "${GATEWAY_INSTALL_SYSTEM_SERVICE:-0}" != "1" ]]; then
+  fail "expected GATEWAY_INSTALL_SYSTEM_SERVICE=1 after fallback install"
+fi
+
+PATH="$ORIGINAL_PATH"
+
+pass "root install falls back to system-level systemd service when user bus is unavailable"
+
+## ============================================================
+## Regression 5: root install in non-systemd environments
+## should use background-process fallback (no systemctl calls)
+## ============================================================
+
+fake_nonsystemd_claw="${tmp_dir}/fake-openclaw-nonsystemd"
+cat >"$fake_nonsystemd_claw" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "gateway" && "${2:-}" == "install" ]]; then
+  exit 99
+fi
+
+exit 0
+EOF
+chmod +x "$fake_nonsystemd_claw"
+
+ROOT_NONSYSTEMD_FALLBACK_CALLED=0
+ROOT_SYSTEMD_FALLBACK_CALLED=0
+start_gateway_background_for_root_nonsystemd() {
+  ROOT_NONSYSTEMD_FALLBACK_CALLED=$((ROOT_NONSYSTEMD_FALLBACK_CALLED + 1))
+  return 0
+}
+install_gateway_systemd_service_for_root() {
+  ROOT_SYSTEMD_FALLBACK_CALLED=$((ROOT_SYSTEMD_FALLBACK_CALLED + 1))
+  return 0
+}
+is_root() { return 0; }
+is_systemd_pid1() { return 1; }
+OS="linux"
+
+install_gateway_service "$fake_nonsystemd_claw" >/dev/null 2>&1 || fail "expected non-systemd fallback install to succeed"
+
+if [[ "$ROOT_NONSYSTEMD_FALLBACK_CALLED" -ne 1 ]]; then
+  fail "expected non-systemd background fallback once, got: $ROOT_NONSYSTEMD_FALLBACK_CALLED"
+fi
+
+if [[ "$ROOT_SYSTEMD_FALLBACK_CALLED" -ne 0 ]]; then
+  fail "expected systemd fallback not to run in non-systemd env, got: $ROOT_SYSTEMD_FALLBACK_CALLED"
+fi
+
+if [[ "${GATEWAY_INSTALL_SYSTEM_SERVICE:-0}" != "1" ]]; then
+  fail "expected GATEWAY_INSTALL_SYSTEM_SERVICE=1 after non-systemd fallback"
+fi
+
+pass "root install uses non-systemd background fallback when PID 1 is not systemd"
+
+## ============================================================
+## Regression 6: npm metadata lookup failures should not block
+## install flow before actual npm install
+## ============================================================
+
+INSTALL_NPM_CALLS=0
+LAST_INSTALL_SPEC=""
+
+npm_view_quick() {
+  return 1
+}
+
+install_clawdbot_npm() {
+  INSTALL_NPM_CALLS=$((INSTALL_NPM_CALLS + 1))
+  LAST_INSTALL_SPEC="${1:-}"
+  return 0
+}
+
+resolve_clawdbot_bin() {
+  echo "/tmp/fake-openclaw"
+  return 0
+}
+
+ensure_clawdbot_bin_link() {
+  return 0
+}
+
+CLAWDBOT_NPM_PKG="openclaw"
+CLAWDBOT_VERSION="latest"
+USE_BETA=0
+
+install_clawdbot >/dev/null 2>&1 || fail "expected install_clawdbot to succeed even if npm metadata lookup fails"
+
+if [[ "$INSTALL_NPM_CALLS" -lt 1 ]]; then
+  fail "expected install_clawdbot_npm to be called"
+fi
+
+if [[ "$LAST_INSTALL_SPEC" != "openclaw@latest" ]]; then
+  fail "expected install spec openclaw@latest, got: ${LAST_INSTALL_SPEC:-<empty>}"
+fi
+
+pass "install proceeds when npm metadata lookup is unavailable"
