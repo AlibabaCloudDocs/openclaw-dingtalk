@@ -1,4 +1,9 @@
 #!/bin/bash
+# Support accidental invocation via zsh/sh by re-execing with bash.
+if [[ -z "${BASH_VERSION:-}" ]]; then
+  exec /usr/bin/env bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 # Openclaw Installer for macOS and Linux
@@ -102,14 +107,16 @@ clack_select() {
     trap 'printf "\033[?25h" > /dev/tty 2>/dev/null || true' RETURN
 
     echo -e "${ACCENT}◆${NC} ${prompt}" > /dev/tty
+    echo -e "  ${MUTED}(↑↓ 导航 | 数字直选 | Enter 确认)${NC}" > /dev/tty
 
     while true; do
-        # Draw options
+        # Draw options with number prefix
         for i in "${!options[@]}"; do
+            local num=$((i + 1))
             if [[ $i -eq $selected ]]; then
-                echo -e "  ${SUCCESS}●${NC} ${options[$i]}" > /dev/tty
+                echo -e "  ${MUTED}[${num}]${NC} ${SUCCESS}●${NC} ${options[$i]}\033[K" > /dev/tty
             else
-                echo -e "  ${MUTED}○${NC} ${options[$i]}" > /dev/tty
+                echo -e "  ${MUTED}[${num}]${NC} ${MUTED}○${NC} ${options[$i]}\033[K" > /dev/tty
             fi
         done
 
@@ -142,7 +149,7 @@ clack_select() {
                 ;;
         esac
 
-        # Move cursor up to redraw
+        # Move cursor up to redraw (only options, title/hint are above the loop)
         printf "\033[${num_options}A" > /dev/tty
     done
 
@@ -445,6 +452,12 @@ cleanup_npm_clawdbot_paths() {
     rm -rf "$npm_root"/.openclaw-* "$npm_root"/openclaw 2>/dev/null || true
 }
 
+# 清理 npm 缓存以确保获取最新包信息
+clear_npm_cache() {
+    log debug "Clearing npm cache for fresh package info..."
+    npm cache clean --force 2>/dev/null || true
+}
+
 extract_clawdbot_conflict_path() {
     local log="$1"
     local path=""
@@ -497,6 +510,32 @@ cleanup_clawdbot_bin_conflict() {
 
 install_clawdbot_npm() {
     local spec="$1"
+
+    # ── Block known-bad openclaw versions ──────────────────────────
+    local _pkg_name=""
+    local _pkg_version=""
+    if [[ "$spec" == *"@"* ]]; then
+        _pkg_name="${spec%%@*}"
+        _pkg_version="${spec#*@}"
+    fi
+    if [[ "$_pkg_name" == "$CLAWDBOT_NPM_PKG" || "$_pkg_name" == "openclaw" ]]; then
+        # Dist-tags (latest/next/beta): resolve to a safe concrete version first.
+        if [[ "$_pkg_version" == "latest" || "$_pkg_version" == "next" || "$_pkg_version" == "beta" ]]; then
+            local _safe=""
+            _safe="$(resolve_safe_openclaw_version "$_pkg_version")"
+            if [[ -n "$_safe" ]]; then
+                log info "Resolved ${spec} → ${_pkg_name}@${_safe} (blocked-version filter)"
+                spec="${_pkg_name}@${_safe}"
+            fi
+        elif is_openclaw_version_blocked "$_pkg_version"; then
+            echo -e "${ERROR}版本 ${_pkg_version} 存在已知严重 Bug，已被阻止安装。${NC}" >&2
+            echo -e "${INFO}i${NC} 请使用其他版本，或等待修复版本发布。" >&2
+            log warn "Blocked installation of openclaw@${_pkg_version} (known critical bug)"
+            return 1
+        fi
+    fi
+    # ──────────────────────────────────────────────────────────────
+
     local log
     log="$(mktempfile)"
 
@@ -702,32 +741,105 @@ CN_HOMEBREW_INSTALL_SCRIPT="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/in
 # Openclaw core npm package name
 CLAWDBOT_NPM_PKG="openclaw"
 
+# ============================================
+# Blocked Openclaw Versions
+# ============================================
+# 2026.2.6 series (including -1, -2, -3 suffixes) has a critical bug.
+# The installer will refuse to install these and automatically select
+# the latest safe version instead.
+OPENCLAW_BLOCKED_VERSION_PATTERNS=("2026.2.6" "2026.2.6-*")
+
+# Check if a version string matches any blocked pattern.
+# Returns 0 (true) if blocked, 1 (false) if safe.
+is_openclaw_version_blocked() {
+    local version="$1"
+    if [[ -z "$version" ]]; then
+        return 1
+    fi
+    local pattern
+    for pattern in "${OPENCLAW_BLOCKED_VERSION_PATTERNS[@]}"; do
+        # shellcheck disable=SC2254
+        case "$version" in
+            $pattern) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# Resolve the latest safe (non-blocked) openclaw version for a given dist-tag.
+# If the tagged version is blocked, fetches all published versions and picks
+# the highest one that is not blocked.
+resolve_safe_openclaw_version() {
+    local tag="${1:-latest}"
+
+    # Fast path: tagged version is not blocked.
+    local candidate=""
+    candidate="$(npm view "${CLAWDBOT_NPM_PKG}@${tag}" version --prefer-online 2>/dev/null || true)"
+    if [[ -n "$candidate" ]] && ! is_openclaw_version_blocked "$candidate"; then
+        echo "$candidate"
+        return 0
+    fi
+
+    # Tagged version is blocked (or unavailable). Fetch the full version list
+    # and pick the highest safe one.
+    local all_versions=""
+    all_versions="$(npm view "${CLAWDBOT_NPM_PKG}" versions --json 2>/dev/null || true)"
+    if [[ -z "$all_versions" ]]; then
+        return 1
+    fi
+
+    local safe=""
+    safe="$(BLOCKED_PATTERNS="${OPENCLAW_BLOCKED_VERSION_PATTERNS[*]}" node -e '
+const fs = require("fs");
+const raw = fs.readFileSync(0, "utf8").trim();
+if (!raw) process.exit(1);
+let versions;
+try { versions = JSON.parse(raw); } catch { process.exit(1); }
+if (!Array.isArray(versions)) process.exit(1);
+
+const blocked = (process.env.BLOCKED_PATTERNS || "").split(" ").filter(Boolean);
+function isBlocked(v) {
+  return blocked.some(p => {
+    if (p.endsWith("*")) return v.startsWith(p.slice(0, -1));
+    return v === p;
+  });
+}
+
+// npm returns versions sorted by semver; pick the last non-blocked entry.
+for (let i = versions.length - 1; i >= 0; i--) {
+  if (!isBlocked(versions[i])) {
+    process.stdout.write(versions[i]);
+    process.exit(0);
+  }
+}
+process.exit(1);
+' <<< "$all_versions" 2>/dev/null || true)"
+
+    if [[ -n "$safe" ]]; then
+        echo "$safe"
+        return 0
+    fi
+    return 1
+}
+
 # Channel IDs (used in config keys)
 CHANNEL_DINGTALK="dingtalk"
-CHANNEL_FEISHU="feishu"
-CHANNEL_WECOM="wecom"
 
 # Channel npm package names
 CHANNEL_PKG_DINGTALK="clawdbot-dingtalk"
-CHANNEL_PKG_FEISHU="@m1heng-clawd/feishu"
-CHANNEL_PKG_WECOM="openclaw-plugin-wecom"
 
 # Channel display names
 CHANNEL_NAME_DINGTALK="钉钉 (DingTalk)"
-CHANNEL_NAME_FEISHU="飞书 (Feishu)"
-CHANNEL_NAME_WECOM="企业微信 (WeCom)"
 
 # Channel action mode
 CHANNEL_ACTION="${CLAWDBOT_CHANNEL_ACTION:-}"  # add, remove, configure, list
-CHANNEL_TARGET="${CLAWDBOT_CHANNEL_TARGET:-}"  # dingtalk, feishu, wecom
+CHANNEL_TARGET="${CLAWDBOT_CHANNEL_TARGET:-}"  # dingtalk
 
 # Get package name for a channel
 get_channel_package() {
     local channel="$1"
     case "$channel" in
         dingtalk) echo "$CHANNEL_PKG_DINGTALK" ;;
-        feishu)   echo "$CHANNEL_PKG_FEISHU" ;;
-        wecom)    echo "$CHANNEL_PKG_WECOM" ;;
         *)        echo "" ;;
     esac
 }
@@ -737,8 +849,6 @@ get_channel_display_name() {
     local channel="$1"
     case "$channel" in
         dingtalk) echo "$CHANNEL_NAME_DINGTALK" ;;
-        feishu)   echo "$CHANNEL_NAME_FEISHU" ;;
-        wecom)    echo "$CHANNEL_NAME_WECOM" ;;
         *)        echo "$channel" ;;
     esac
 }
@@ -779,7 +889,7 @@ Uninstall Options:
   --keep-config          Keep configuration files
 
 Channel Management:
-  --channel-add <name>       Add and configure a channel (dingtalk|feishu|wecom)
+  --channel-add <name>       Add and configure a channel (dingtalk)
   --channel-remove <name>    Remove a channel plugin
   --channel-configure <name> Reconfigure an existing channel
   --channel-list             List installed channel plugins
@@ -828,7 +938,7 @@ Environment variables:
   CLAWDBOT_LOG_LEVEL=debug|info|warn|error  Log level (default: info)
   CLAWDBOT_LOG_HISTORY=<n>         Historical log files to keep (default: 5)
   CLAWDBOT_CHANNEL_ACTION=add|remove|configure|list  Channel management action
-  CLAWDBOT_CHANNEL_TARGET=dingtalk|feishu|wecom      Target channel
+  CLAWDBOT_CHANNEL_TARGET=dingtalk      Target channel
 
 Examples:
   # Interactive menu (TTY mode)
@@ -853,11 +963,20 @@ Examples:
   ./openclaw_installer.sh --uninstall --purge
 
   # Add a channel plugin
-  ./openclaw_installer.sh --channel-add feishu
+  ./openclaw_installer.sh --channel-add dingtalk
 
   # List installed channels
   ./openclaw_installer.sh --channel-list
 EOF
+}
+
+require_arg() {
+    local flag="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        echo -e "${ERROR}Error: ${flag} requires a value${NC}" >&2
+        exit 2
+    fi
 }
 
 parse_args() {
@@ -943,10 +1062,12 @@ parse_args() {
                 shift
                 ;;
             --install-method|--method)
+                require_arg "$1" "${2:-}"
                 INSTALL_METHOD="$2"
                 shift 2
                 ;;
             --version)
+                require_arg "$1" "${2:-}"
                 CLAWDBOT_VERSION="$2"
                 shift 2
                 ;;
@@ -963,6 +1084,7 @@ parse_args() {
                 shift
                 ;;
             --git-dir|--dir)
+                require_arg "$1" "${2:-}"
                 GIT_DIR="$2"
                 shift 2
                 ;;
@@ -984,14 +1106,17 @@ parse_args() {
                 ;;
             --log-file)
                 LOG_ENABLED=1
+                require_arg "$1" "${2:-}"
                 LOG_FILE="$2"
                 shift 2
                 ;;
             --log-level)
+                require_arg "$1" "${2:-}"
                 LOG_LEVEL="$2"
                 shift 2
                 ;;
             --log-history)
+                require_arg "$1" "${2:-}"
                 LOG_HISTORY="$2"
                 shift 2
                 ;;
@@ -1014,16 +1139,19 @@ parse_args() {
             # Channel management options
             --channel-add)
                 CHANNEL_ACTION="add"
+                require_arg "$1" "${2:-}"
                 CHANNEL_TARGET="$2"
                 shift 2
                 ;;
             --channel-remove)
                 CHANNEL_ACTION="remove"
+                require_arg "$1" "${2:-}"
                 CHANNEL_TARGET="$2"
                 shift 2
                 ;;
             --channel-configure)
                 CHANNEL_ACTION="configure"
+                require_arg "$1" "${2:-}"
                 CHANNEL_TARGET="$2"
                 shift 2
                 ;;
@@ -1640,8 +1768,8 @@ check_file_tools() {
 
 # Install file parsing tools for document content extraction
 install_file_tools() {
-    log info "Installing file parsing tools..."
-    spinner_start "Installing file parsing tools (pdftotext, pandoc, catdoc)..."
+    log info "Installing file parsing tools and fonts..."
+    spinner_start "Installing file parsing tools (pdftotext, pandoc, catdoc) and fonts..."
     local install_result=0
 
     if [[ "$OS" == "macos" ]]; then
@@ -1654,32 +1782,55 @@ install_file_tools() {
     elif [[ "$OS" == "linux" ]]; then
         require_sudo
         if command -v apt-get &>/dev/null; then
-            if apt_install install -y poppler-utils pandoc catdoc >/dev/null 2>&1; then
+            if apt_install install -y poppler-utils pandoc catdoc fonts-noto-cjk fonts-liberation >/dev/null 2>&1; then
                 install_result=0
             else
                 install_result=1
             fi
-        elif command -v dnf &>/dev/null; then
-            if maybe_sudo dnf install -y poppler-utils pandoc catdoc >/dev/null 2>&1; then
-                install_result=0
-            else
-                install_result=1
+        elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then
+            # RHEL/CentOS/Fedora: package names differ across versions/repos.
+            # Split installs so a missing font package doesn't prevent the other tools from installing.
+            local pm="yum"
+            if command -v dnf &>/dev/null; then
+                pm="dnf"
             fi
-        elif command -v yum &>/dev/null; then
-            if maybe_sudo yum install -y poppler-utils pandoc catdoc >/dev/null 2>&1; then
-                install_result=0
-            else
+
+            maybe_sudo "$pm" install -y poppler-utils pandoc catdoc >/dev/null 2>&1 || install_result=1
+            maybe_sudo "$pm" install -y liberation-fonts >/dev/null 2>&1 || install_result=1
+
+            # Noto CJK fonts (CentOS/RHEL commonly provide ttc packages)
+            local noto_ok=0
+            local -a noto_candidates=(
+                google-noto-sans-cjk-ttc-fonts
+                google-noto-serif-cjk-ttc-fonts
+                google-noto-sans-cjk-fonts
+                google-noto-cjk-fonts
+            )
+            local pkg=""
+            for pkg in "${noto_candidates[@]}"; do
+                if maybe_sudo "$pm" install -y "$pkg" >/dev/null 2>&1; then
+                    noto_ok=1
+                    break
+                fi
+            done
+            if [[ "$noto_ok" -eq 0 ]]; then
+                # Keep going (tools may still be useful), but mark partial failure.
                 install_result=1
             fi
         else
             spinner_stop 1 "Could not detect package manager for file tools"
-            echo -e "${INFO}i${NC} Please install poppler-utils, pandoc, catdoc manually."
+            echo -e "${INFO}i${NC} Please install poppler-utils, pandoc, catdoc, and CJK fonts (fonts-noto-cjk or google-noto-sans-cjk-ttc-fonts) plus Liberation fonts (fonts-liberation or liberation-fonts) manually."
             return 1
+        fi
+
+        # Refresh font cache if available (best-effort)
+        if command -v fc-cache &>/dev/null; then
+            maybe_sudo fc-cache -f >/dev/null 2>&1 || true
         fi
     fi
 
     if [[ "$install_result" -eq 0 ]]; then
-        spinner_stop 0 "File parsing tools installed (pdftotext, pandoc, catdoc)"
+        spinner_stop 0 "File parsing tools and fonts installed"
     else
         spinner_stop 1 "Some file parsing tools installation failed"
     fi
@@ -1714,7 +1865,7 @@ check_python() {
     local major="${version%%.*}"
     local minor="${version#*.}"
 
-    if [[ "$major" -ge 3 && "$minor" -ge 12 ]]; then
+    if [[ "$major" -gt 3 || ( "$major" -eq 3 && "$minor" -ge 12 ) ]]; then
         echo -e "${SUCCESS}✓${NC} Python ${version} already installed ($python_cmd)"
         return 0
     else
@@ -1999,6 +2150,24 @@ warn_clawdbot_not_found() {
 
 resolve_clawdbot_bin() {
     refresh_shell_command_cache
+    if [[ -n "${CLAWDBOT_BIN:-}" && -x "${CLAWDBOT_BIN:-}" ]]; then
+        echo "$CLAWDBOT_BIN"
+        return 0
+    fi
+
+    # Prefer the git-install wrapper if present.
+    if [[ -x "$HOME/.local/bin/openclaw" ]]; then
+        echo "$HOME/.local/bin/openclaw"
+        return 0
+    fi
+
+    local npm_bin=""
+    npm_bin="$(npm_global_bin_dir || true)"
+    if [[ -n "$npm_bin" && -x "${npm_bin}/openclaw" ]]; then
+        echo "${npm_bin}/openclaw"
+        return 0
+    fi
+
     local resolved=""
     resolved="$(type -P openclaw 2>/dev/null || true)"
     if [[ -n "$resolved" && -x "$resolved" ]]; then
@@ -2011,13 +2180,6 @@ resolve_clawdbot_bin() {
     resolved="$(type -P openclaw 2>/dev/null || true)"
     if [[ -n "$resolved" && -x "$resolved" ]]; then
         echo "$resolved"
-        return 0
-    fi
-
-    local npm_bin=""
-    npm_bin="$(npm_global_bin_dir || true)"
-    if [[ -n "$npm_bin" && -x "${npm_bin}/openclaw" ]]; then
-        echo "${npm_bin}/openclaw"
         return 0
     fi
 
@@ -2230,8 +2392,8 @@ run_bootstrap_onboarding_if_needed() {
 resolve_clawdbot_version() {
     local version=""
     local claw="${CLAWDBOT_BIN:-}"
-    if [[ -z "$claw" ]] && command -v openclaw &> /dev/null; then
-        claw="$(command -v openclaw)"
+    if [[ -z "$claw" ]]; then
+        claw="$(resolve_clawdbot_bin || true)"
     fi
 
     # First try to get version from package.json (more reliable for npm comparison)
@@ -2272,7 +2434,42 @@ const raw = fs.readFileSync(0, "utf8").trim();
 if (!raw) process.exit(1);
 try {
   const data = JSON.parse(raw);
-  process.exit(data?.service?.loaded ? 0 : 1);
+  const asBool = (v) => {
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0;
+    if (typeof v === "string") {
+      const s = v.trim().toLowerCase();
+      if (["true", "yes", "y", "1", "running", "active", "started", "up"].includes(s)) return true;
+      if (["false", "no", "n", "0", "stopped", "inactive", "down"].includes(s)) return false;
+      if (s === "loaded") return true;
+      if (s === "unloaded") return false;
+    }
+    return undefined;
+  };
+
+  // Different Openclaw versions/OSes may emit different shapes. Try to infer "running" first,
+  // then fall back to "loaded" for backward compatibility.
+  const svc = data?.service ?? data?.daemon ?? data?.gateway?.service ?? data?.gateway ?? {};
+
+  const running = asBool(
+    svc?.running ??
+      svc?.active ??
+      svc?.isRunning ??
+      svc?.status ??
+      svc?.state ??
+      data?.running ??
+      data?.active ??
+      data?.isRunning ??
+      data?.status ??
+      data?.state
+  );
+  if (running !== undefined) process.exit(running ? 0 : 1);
+
+  const pid = svc?.pid ?? data?.pid ?? data?.service?.pid;
+  if (typeof pid === "number" && pid > 0) process.exit(0);
+
+  const loaded = asBool(svc?.loaded ?? svc?.isLoaded ?? data?.loaded ?? data?.serviceLoaded);
+  process.exit(loaded ? 0 : 1);
 } catch {
   process.exit(1);
 }
@@ -2369,7 +2566,7 @@ configure_channel_dingtalk() {
         return 1
     fi
 
-    printf "${ACCENT}◆${NC} 钉钉 Client Secret: " > /dev/tty
+    printf "${ACCENT}◆${NC} 钉钉 Client Secret（可见输入）: " > /dev/tty
     read -r dingtalk_client_secret < /dev/tty || true
     if [[ -z "$dingtalk_client_secret" ]]; then
         echo -e "${ERROR}◆${NC} Client Secret 不能为空"
@@ -2390,104 +2587,11 @@ configure_channel_dingtalk() {
     return 0
 }
 
-# Configure Feishu channel
-configure_channel_feishu() {
-    local feishu_app_id=""
-    local feishu_app_secret=""
-    local feishu_domain="feishu"
-
-    echo ""
-    echo -e "${ACCENT}◆${NC} ${BOLD}飞书 (Feishu) 配置${NC}"
-    echo -e "${MUTED}  获取凭证: 飞书开放平台 > 应用管理 > 凭证与基础信息${NC}"
-    echo -e "${MUTED}  注意: 需要配置事件订阅（长连接模式）并添加 im.message.receive_v1 事件${NC}"
-    echo ""
-
-    printf "${ACCENT}◆${NC} 飞书 App ID (cli_xxx): " > /dev/tty
-    read -r feishu_app_id < /dev/tty || true
-    if [[ -z "$feishu_app_id" ]]; then
-        echo -e "${WARN}◆${NC} App ID 为空，跳过飞书配置"
-        echo ""
-        return 1
-    fi
-
-    printf "${ACCENT}◆${NC} 飞书 App Secret: " > /dev/tty
-    read -r feishu_app_secret < /dev/tty || true
-    if [[ -z "$feishu_app_secret" ]]; then
-        echo -e "${ERROR}◆${NC} App Secret 不能为空"
-        return 1
-    fi
-
-    # Domain selection
-    echo ""
-    local domain_options=(
-        "feishu - 国内版飞书"
-        "lark   - 国际版 Lark"
-    )
-    local domain_choice
-    domain_choice=$(clack_select "选择飞书版本" "${domain_options[@]}")
-    case $domain_choice in
-        0) feishu_domain="feishu" ;;
-        1) feishu_domain="lark" ;;
-    esac
-
-    # Escape for JSON
-    local escaped_app_id=""
-    local escaped_app_secret=""
-    escaped_app_id="$(json_escape "$feishu_app_id")"
-    escaped_app_secret="$(json_escape "$feishu_app_secret")"
-
-    # Store in global variables
-    CHANNEL_FEISHU_APP_ID="$escaped_app_id"
-    CHANNEL_FEISHU_APP_SECRET="$escaped_app_secret"
-    CHANNEL_FEISHU_DOMAIN="$feishu_domain"
-
-    echo -e "${SUCCESS}◆${NC} 飞书配置已收集 (域名: ${INFO}$feishu_domain${NC})"
-    return 0
-}
-
-# Configure WeCom channel
-configure_channel_wecom() {
-    local wecom_token=""
-    local wecom_encoding_aes_key=""
-
-    echo ""
-    echo -e "${ACCENT}◆${NC} ${BOLD}企业微信 (WeCom) 配置${NC}"
-    echo -e "${MUTED}  获取凭证: 企业微信管理后台 > 应用管理 > 自建应用 > 接收消息${NC}"
-    echo -e "${MUTED}  注意: 需要创建「智能机器人」类型应用${NC}"
-    echo ""
-
-    printf "${ACCENT}◆${NC} 企业微信 Token: " > /dev/tty
-    read -r wecom_token < /dev/tty || true
-    if [[ -z "$wecom_token" ]]; then
-        echo -e "${WARN}◆${NC} Token 为空，跳过企业微信配置"
-        echo ""
-        return 1
-    fi
-
-    printf "${ACCENT}◆${NC} 企业微信 EncodingAESKey: " > /dev/tty
-    read -r wecom_encoding_aes_key < /dev/tty || true
-    if [[ -z "$wecom_encoding_aes_key" ]]; then
-        echo -e "${ERROR}◆${NC} EncodingAESKey 不能为空"
-        return 1
-    fi
-
-    # Escape for JSON
-    local escaped_token=""
-    local escaped_aes_key=""
-    escaped_token="$(json_escape "$wecom_token")"
-    escaped_aes_key="$(json_escape "$wecom_encoding_aes_key")"
-
-    # Store in global variables
-    CHANNEL_WECOM_TOKEN="$escaped_token"
-    CHANNEL_WECOM_ENCODING_AES_KEY="$escaped_aes_key"
-
-    echo -e "${SUCCESS}◆${NC} 企业微信配置已收集"
-    return 0
-}
-
 # Install a channel plugin
 install_channel_plugin() {
     local channel="$1"
+    local spec_override="${2:-}"
+    local no_restart="${3:-0}"
     local pkg=""
     pkg="$(get_channel_package "$channel")"
 
@@ -2511,62 +2615,36 @@ install_channel_plugin() {
 
     local display_name=""
     display_name="$(get_channel_display_name "$channel")"
+    local spec="${pkg}"
+    if [[ -n "$spec_override" ]]; then
+        spec="$spec_override"
+    fi
     local npm_peer_deps_flag=""
     if [[ "${NPM_LEGACY_PEER_DEPS:-0}" == "1" ]]; then
         npm_peer_deps_flag="--legacy-peer-deps"
     fi
 
-    spinner_start "安装 ${display_name} 插件..."
+    spinner_start "安装 ${display_name} 插件（npm 全局）..."
 
-    # Try openclaw plugins install first
-    if "$claw" plugins install "$pkg" >/dev/null 2>&1; then
-        spinner_stop 0 "${display_name} 插件已安装"
+    # Prefer npm global install for stability. Openclaw does NOT auto-discover npm global node_modules,
+    # so we also patch ~/.openclaw/openclaw.json to include plugins.load.paths for this package.
+    local npm_flags="--loglevel $NPM_LOGLEVEL ${NPM_SILENT_FLAG:+$NPM_SILENT_FLAG} --no-fund --no-audit $npm_peer_deps_flag --prefer-online"
+    if ! npm $npm_flags install -g "$spec" >/dev/null 2>&1; then
+        spinner_stop 1 "${display_name} 插件安装失败（npm install -g）"
+        return 1
+    fi
+
+    # Patch config to load the global plugin directory (so config stays valid and plugin is discoverable).
+    ensure_openclaw_plugin_load_path_from_npm_global "$pkg" || true
+
+    spinner_stop 0 "${display_name} 插件已安装"
+    if [[ "$channel" == "$CHANNEL_DINGTALK" ]]; then
+        seed_dingtalk_workspace_templates_if_missing || true
+    fi
+    if [[ "$no_restart" != "1" ]]; then
         restart_gateway_if_running "$claw"
-        return 0
     fi
-
-    # Try update if already installed
-    if "$claw" plugins update "$pkg" >/dev/null 2>&1; then
-        spinner_stop 0 "${display_name} 插件已更新"
-        restart_gateway_if_running "$claw"
-        return 0
-    fi
-
-    # Fallback: install to ~/.openclaw/extensions/ directly
-    # This handles cases where config is invalid or plugins command fails
-    local extensions_dir="${HOME}/.openclaw/extensions"
-    local plugin_dir="${extensions_dir}/${pkg}"
-    local temp_dir=""
-    temp_dir="$(mktemp -d)"
-
-    spinner_stop 0 "尝试直接安装..."
-    spinner_start "下载 ${display_name} 插件..."
-
-    # Download package to temp directory
-    if npm pack "$pkg" --pack-destination "$temp_dir" >/dev/null 2>&1; then
-        local tarball=""
-        tarball="$(ls "$temp_dir"/*.tgz 2>/dev/null | head -1)"
-        if [[ -n "$tarball" ]]; then
-            mkdir -p "$extensions_dir"
-            rm -rf "$plugin_dir"
-            mkdir -p "$plugin_dir"
-            tar -xzf "$tarball" -C "$plugin_dir" --strip-components=1 2>/dev/null
-
-            # Install dependencies
-            spinner_stop 0 "正在安装依赖..."
-            spinner_start "安装 ${display_name} 依赖..."
-            if (cd "$plugin_dir" && npm install --omit=dev --no-fund --no-audit $npm_peer_deps_flag >/dev/null 2>&1); then
-                rm -rf "$temp_dir"
-                spinner_stop 0 "${display_name} 插件已安装"
-                restart_gateway_if_running "$claw"
-                return 0
-            fi
-        fi
-    fi
-
-    rm -rf "$temp_dir"
-    spinner_stop 1 "${display_name} 插件安装失败"
-    return 1
+    return 0
 }
 
 # Remove a channel plugin
@@ -2625,7 +2703,7 @@ list_channel_plugins() {
     echo -e "${ACCENT}${BOLD}└────────────────────────────────────────┘${NC}"
     echo ""
 
-    local channels=("dingtalk" "feishu" "wecom")
+    local channels=("dingtalk")
     
     for ch in "${channels[@]}"; do
         local display_name=""
@@ -2666,34 +2744,16 @@ generate_channel_config() {
       "enabled": true,
       "clientId": "${CHANNEL_DINGTALK_CLIENT_ID}",
       "clientSecret": "${CHANNEL_DINGTALK_CLIENT_SECRET}",
-      "replyMode": "markdown"
-    }
-EOF
-)
-            fi
-            ;;
-        feishu)
-            if [[ -n "${CHANNEL_FEISHU_APP_ID:-}" ]]; then
-                config=$(cat <<EOF
-    "feishu": {
-      "enabled": true,
-      "appId": "${CHANNEL_FEISHU_APP_ID}",
-      "appSecret": "${CHANNEL_FEISHU_APP_SECRET}",
-      "domain": "${CHANNEL_FEISHU_DOMAIN:-feishu}",
-      "connectionMode": "websocket",
-      "requireMention": true
-    }
-EOF
-)
-            fi
-            ;;
-        wecom)
-            if [[ -n "${CHANNEL_WECOM_TOKEN:-}" ]]; then
-                config=$(cat <<EOF
-    "wecom": {
-      "enabled": true,
-      "token": "${CHANNEL_WECOM_TOKEN}",
-      "encodingAesKey": "${CHANNEL_WECOM_ENCODING_AES_KEY}"
+      "replyMode": "markdown",
+      "aliyunMcp": {
+        "timeoutSeconds": 60,
+        "tools": {
+          "webSearch": { "enabled": false },
+          "codeInterpreter": { "enabled": false },
+          "webParser": { "enabled": false },
+          "wan26Media": { "enabled": false, "autoSendToDingtalk": true }
+        }
+      }
     }
 EOF
 )
@@ -2719,18 +2779,7 @@ generate_plugin_entry() {
         dingtalk)
             cat <<EOF
       "$pkg": {
-        "enabled": true,
-        "config": {
-          "aliyunMcp": {
-            "timeoutSeconds": 60,
-            "tools": {
-              "webSearch": { "enabled": false },
-              "codeInterpreter": { "enabled": false },
-              "webParser": { "enabled": false },
-              "wan26Media": { "enabled": false, "autoSendToDingtalk": true }
-            }
-          }
-        }
+        "enabled": true
       }
 EOF
             ;;
@@ -2763,69 +2812,6 @@ configure_clawdbot_interactive() {
     # Create config directory
     mkdir -p "$config_dir"
 
-    # ========================================
-    # Channel Selection (Multi-select style)
-    # ========================================
-    echo ""
-    echo -e "${ACCENT}◆${NC} ${BOLD}选择要配置的渠道${NC}"
-    echo -e "${MUTED}  提示: 可以先跳过，稍后用 --channel-add 添加${NC}"
-    echo ""
-
-    local channel_options=(
-        "钉钉 (DingTalk)   - 需要 clientId + clientSecret"
-        "飞书 (Feishu)     - 需要 appId + appSecret"
-        "企业微信 (WeCom)  - 需要 token + encodingAesKey"
-        "跳过渠道配置"
-    )
-
-    # Collect which channels to configure
-    local configure_dingtalk=0
-    local configure_feishu=0
-    local configure_wecom=0
-    local done_selecting=0
-
-    while [[ "$done_selecting" -eq 0 ]]; do
-        local channel_choice
-        channel_choice=$(clack_select "选择渠道 (已选: DT=${configure_dingtalk} FS=${configure_feishu} WC=${configure_wecom})" "${channel_options[@]}")
-
-        case $channel_choice in
-            0) 
-                configure_dingtalk=1
-                echo -e "${SUCCESS}✓${NC} 已选择钉钉"
-                ;;
-            1) 
-                configure_feishu=1
-                echo -e "${SUCCESS}✓${NC} 已选择飞书"
-                ;;
-            2) 
-                configure_wecom=1
-                echo -e "${SUCCESS}✓${NC} 已选择企业微信"
-                ;;
-            3) 
-                done_selecting=1
-                ;;
-        esac
-
-        # Ask if want to add more channels (unless skipped)
-        if [[ "$done_selecting" -eq 0 ]]; then
-            if ! clack_confirm "继续添加其他渠道？" "false"; then
-                done_selecting=1
-            fi
-        fi
-    done
-
-    # Configure selected channels
-    if [[ "$configure_dingtalk" -eq 1 ]]; then
-        configure_channel_dingtalk || configure_dingtalk=0
-    fi
-
-    if [[ "$configure_feishu" -eq 1 ]]; then
-        configure_channel_feishu || configure_feishu=0
-    fi
-
-    if [[ "$configure_wecom" -eq 1 ]]; then
-        configure_channel_wecom || configure_wecom=0
-    fi
 
     # ========================================
     # DashScope / Model Configuration
@@ -2841,7 +2827,7 @@ configure_clawdbot_interactive() {
     dashscope_base_url=${dashscope_base_url:-https://coding.dashscope.aliyuncs.com/v1}
 
     local dashscope_api_key=""
-    printf "${ACCENT}◆${NC} 百炼 API Key: " > /dev/tty
+    printf "${ACCENT}◆${NC} 百炼 API Key（可见输入）: " > /dev/tty
     read -r dashscope_api_key < /dev/tty || true
     if [[ -z "$dashscope_api_key" ]]; then
         echo -e "${ERROR}◆${NC} API Key 不能为空"
@@ -2864,60 +2850,7 @@ configure_clawdbot_interactive() {
     escaped_dashscope_base_url="$(json_escape "$dashscope_base_url")"
     escaped_dashscope_api_key="$(json_escape "$dashscope_api_key")"
 
-    # ========================================
-    # Build channels config
-    # ========================================
-    local channels_config=""
-    local plugins_config=""
-    local has_any_channel=0
 
-    if [[ "$configure_dingtalk" -eq 1 && -n "${CHANNEL_DINGTALK_CLIENT_ID:-}" ]]; then
-        has_any_channel=1
-        channels_config+="$(generate_channel_config dingtalk)"
-        if [[ "$configure_feishu" -eq 1 || "$configure_wecom" -eq 1 ]]; then
-            channels_config+=","
-        fi
-        channels_config+=$'\n'
-        plugins_config+="$(generate_plugin_entry dingtalk)"
-    fi
-
-    if [[ "$configure_feishu" -eq 1 && -n "${CHANNEL_FEISHU_APP_ID:-}" ]]; then
-        has_any_channel=1
-        channels_config+="$(generate_channel_config feishu)"
-        if [[ "$configure_wecom" -eq 1 ]]; then
-            channels_config+=","
-        fi
-        channels_config+=$'\n'
-        if [[ -n "$plugins_config" ]]; then
-            plugins_config+=","$'\n'
-        fi
-        plugins_config+="$(generate_plugin_entry feishu)"
-    fi
-
-    if [[ "$configure_wecom" -eq 1 && -n "${CHANNEL_WECOM_TOKEN:-}" ]]; then
-        has_any_channel=1
-        channels_config+="$(generate_channel_config wecom)"
-        channels_config+=$'\n'
-        if [[ -n "$plugins_config" ]]; then
-            plugins_config+=","$'\n'
-        fi
-        plugins_config+="$(generate_plugin_entry wecom)"
-    fi
-
-    # Build full channels block if any configured
-    local full_channels_block=""
-    if [[ "$has_any_channel" -eq 1 ]]; then
-        full_channels_block=$(cat <<EOF
-  "channels": {
-${channels_config}  },
-  "plugins": {
-    "entries": {
-${plugins_config}
-    }
-  },
-EOF
-)
-    fi
 
     # ========================================
     # Write configuration file
@@ -2925,7 +2858,6 @@ EOF
     echo -e "${WARN}→${NC} 写入配置文件..."
     cat > "$config_file" << CONFIGEOF
 {
-${full_channels_block}
   "gateway": {
     "mode": "local",
     "port": 18789,
@@ -2955,13 +2887,8 @@ ${full_channels_block}
         "apiKey": "$escaped_dashscope_api_key",
         "api": "openai-completions",
         "models": [
-          { "id": "qwen-plus", "name": "Qwen Plus", "contextWindow": 1000000, "maxTokens": 32768, "reasoning": true, "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false } },
-          { "id": "qwen3-max", "name": "Qwen3 Max", "contextWindow": 262144, "maxTokens": 65536 },
           { "id": "qwen3-max-2026-01-23", "name": "Qwen3 Max Thinking", "contextWindow": 262144, "maxTokens": 32768, "reasoning": true, "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false } },
-          { "id": "qwen-flash", "name": "Qwen Flash", "contextWindow": 1000000, "maxTokens": 32768, "reasoning": true, "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false } },
-          { "id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus", "contextWindow": 1000000, "maxTokens": 65536 },
-          { "id": "glm-4.7", "name": "GLM 4.7", "contextWindow": 202752, "maxTokens": 16384, "reasoning": true, "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false } },
-          { "id": "deepseek-v3.2", "name": "DeepSeek V3.2", "contextWindow": 131072, "maxTokens": 65536, "reasoning": true, "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false } }
+          { "id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus", "contextWindow": 1000000, "maxTokens": 65536 }
         ]
       }
     }
@@ -2989,25 +2916,7 @@ CONFIGEOF
     log info "Configuration file generated: $config_file"
     log debug "Selected model: $SELECTED_MODEL"
 
-    # ========================================
-    # Install channel plugins
-    # ========================================
-    local claw="${CLAWDBOT_BIN:-}"
-    if [[ -z "$claw" ]]; then
-        claw="$(resolve_clawdbot_bin || true)"
-    fi
 
-    if [[ -n "$claw" ]]; then
-        if [[ "$configure_dingtalk" -eq 1 && -n "${CHANNEL_DINGTALK_CLIENT_ID:-}" ]]; then
-            install_channel_plugin dingtalk || true
-        fi
-        if [[ "$configure_feishu" -eq 1 && -n "${CHANNEL_FEISHU_APP_ID:-}" ]]; then
-            install_channel_plugin feishu || true
-        fi
-        if [[ "$configure_wecom" -eq 1 && -n "${CHANNEL_WECOM_TOKEN:-}" ]]; then
-            install_channel_plugin wecom || true
-        fi
-    fi
 
     # ========================================
     # Summary
@@ -3020,18 +2929,8 @@ CONFIGEOF
     echo -e "  ${MUTED}配置详情${NC}"
     echo -e "  ${MUTED}├─${NC} 配置文件   ${INFO}$config_file${NC}"
     echo -e "  ${MUTED}├─${NC} 当前模型   ${INFO}$SELECTED_MODEL${NC}"
-    
-    # Show configured channels
-    local channel_summary=""
-    [[ "$configure_dingtalk" -eq 1 && -n "${CHANNEL_DINGTALK_CLIENT_ID:-}" ]] && channel_summary+="钉钉 "
-    [[ "$configure_feishu" -eq 1 && -n "${CHANNEL_FEISHU_APP_ID:-}" ]] && channel_summary+="飞书 "
-    [[ "$configure_wecom" -eq 1 && -n "${CHANNEL_WECOM_TOKEN:-}" ]] && channel_summary+="企业微信 "
-    
-    if [[ -n "$channel_summary" ]]; then
-        echo -e "  ${MUTED}└─${NC} 已配置渠道 ${SUCCESS}${channel_summary}${NC}"
-    else
-        echo -e "  ${MUTED}└─${NC} 已配置渠道 ${MUTED}无${NC}"
-    fi
+
+    echo -e "  ${MUTED}└─${NC} 渠道插件   ${MUTED}请通过「渠道管理」菜单安装${NC}"
 
     echo ""
     echo -e "  ${WARN}重要：请保存以下 Gateway Token${NC}"
@@ -3065,6 +2964,10 @@ CONFIGEOF
 # Main installation flow (extracted from original main)
 run_install_flow() {
     log info "=== Starting install flow ==="
+
+    # Clear npm cache before install
+    clear_npm_cache
+
     local detected_checkout=""
     detected_checkout="$(detect_clawdbot_checkout "$PWD" || true)"
     log debug "Detected checkout: ${detected_checkout:-none}"
@@ -3377,16 +3280,10 @@ get_installed_version() {
     if [[ "$pkg" == "clawdbot" || "$pkg" == "openclaw" ]]; then
         version="$(resolve_clawdbot_version)"
     else
-        # For plugins, try clawdbot plugins list first
-        local claw=""
-        claw="$(resolve_clawdbot_bin || true)"
-        if [[ -n "$claw" ]]; then
-            # Parse clawdbot plugins list output for version
-            # The output format is: | name | id | status | source | version |
-            local plugin_name="${pkg##*-}"  # Extract 'dingtalk' from 'clawdbot-dingtalk'
-            # For scoped packages like @m1heng-clawd/feishu, extract 'feishu'
-            plugin_name="${plugin_name##*/}"
-            version="$("$claw" plugins list 2>/dev/null | grep -i "$plugin_name" | awk -F'│' '{gsub(/^[ \t]+|[ \t]+$/, "", $6); print $6}' | grep -E '^[0-9]' | head -n1 || true)"
+        # For plugins, first check ~/.openclaw/extensions/ directory (fastest)
+        local ext_dir="$HOME/.openclaw/extensions/$pkg"
+        if [[ -f "$ext_dir/package.json" ]]; then
+            version="$(grep '"version"' "$ext_dir/package.json" 2>/dev/null | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
         fi
 
         # Fallback to npm global list
@@ -3399,6 +3296,368 @@ get_installed_version() {
     echo "$version"
 }
 
+resolve_openclaw_agent_workspace_dir() {
+    # Best-effort: read agents.defaults.workspace from config; fallback to ~/.openclaw/workspace
+    local cfg="${CONFIG_FILE:-$HOME/.openclaw/openclaw.json}"
+    if [[ -f "$cfg" ]] && command -v node &>/dev/null; then
+        local v=""
+        v="$(CONFIG_FILE="$cfg" node -e '
+const fs = require("fs");
+const p = process.env.CONFIG_FILE;
+let cfg;
+try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch { process.exit(0); }
+const w = cfg?.agents?.defaults?.workspace;
+if (typeof w === "string" && w.trim()) process.stdout.write(w.trim());
+' 2>/dev/null || true)"
+        if [[ -n "$v" ]]; then
+            echo "$v"
+            return 0
+        fi
+    fi
+    echo "$HOME/.openclaw/workspace"
+    return 0
+}
+
+resolve_installer_script_dir() {
+    local src="${BASH_SOURCE[0]:-$0}"
+    local dir=""
+    dir="$(cd "$(dirname "$src")" >/dev/null 2>&1 && pwd -P)" || return 1
+    if [[ -z "$dir" ]]; then
+        return 1
+    fi
+    echo "$dir"
+    return 0
+}
+
+expand_home_path() {
+    local raw="$1"
+    if [[ "$raw" == "~" ]]; then
+        echo "$HOME"
+        return 0
+    fi
+    if [[ "$raw" == "~/"* ]]; then
+        echo "${HOME}/${raw#~/}"
+        return 0
+    fi
+    echo "$raw"
+    return 0
+}
+
+resolve_npm_global_package_dir() {
+    local pkg="$1"
+    if [[ -z "$pkg" ]] || ! command -v npm &>/dev/null; then
+        return 1
+    fi
+
+    local npm_root=""
+    npm_root="$(npm root -g 2>/dev/null || true)"
+    if [[ -z "$npm_root" ]]; then
+        return 1
+    fi
+
+    local candidate="${npm_root%/}/${pkg}"
+    if [[ -d "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+    fi
+    return 1
+}
+
+resolve_dingtalk_workspace_template_dir() {
+    local env_dir="${DINGTALK_WORKSPACE_TEMPLATE_DIR:-}"
+    if [[ -n "$env_dir" ]]; then
+        env_dir="$(expand_home_path "$env_dir")"
+        if [[ -d "$env_dir" ]]; then
+            echo "$env_dir"
+            return 0
+        fi
+    fi
+
+    local package_dir=""
+    package_dir="$(resolve_npm_global_package_dir "$CHANNEL_PKG_DINGTALK" || true)"
+    if [[ -n "$package_dir" ]]; then
+        local packaged_candidate="${package_dir%/}/workspace-templates"
+        if [[ -d "$packaged_candidate" ]]; then
+            echo "$packaged_candidate"
+            return 0
+        fi
+    fi
+
+    local script_dir=""
+    script_dir="$(resolve_installer_script_dir || true)"
+    if [[ -z "$script_dir" ]]; then
+        return 1
+    fi
+    local candidates=(
+        "${script_dir}/../extensions/dingtalk/workspace-templates"
+        "${script_dir}/extensions/dingtalk/workspace-templates"
+    )
+    local candidate=""
+    for candidate in "${candidates[@]}"; do
+        if [[ -d "$candidate" ]]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+is_brand_new_workspace_dir() {
+    local workspace="$1"
+    local required=(
+        "AGENTS.md"
+        "SOUL.md"
+        "TOOLS.md"
+        "IDENTITY.md"
+        "USER.md"
+        "HEARTBEAT.md"
+    )
+    local name
+    for name in "${required[@]}"; do
+        if [[ -f "${workspace%/}/${name}" ]]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+seed_dingtalk_workspace_templates_if_missing() {
+    local raw_workspace=""
+    raw_workspace="$(resolve_openclaw_agent_workspace_dir || true)"
+    if [[ -z "$raw_workspace" ]]; then
+        return 0
+    fi
+
+    local workspace=""
+    workspace="$(expand_home_path "$raw_workspace")"
+    if [[ -z "$workspace" ]]; then
+        return 0
+    fi
+
+    mkdir -p "$workspace" 2>/dev/null || {
+        echo -e "${WARN}→${NC} 无法创建工作区目录，跳过 DingTalk 模板初始化: ${INFO}${workspace}${NC}"
+        return 0
+    }
+
+    local template_dir=""
+    template_dir="$(resolve_dingtalk_workspace_template_dir || true)"
+    if [[ -z "$template_dir" ]]; then
+        log warn "DingTalk workspace templates not found in package/local source; skip seeding"
+        echo -e "${WARN}→${NC} 未找到 DingTalk workspace 模板目录（npm 包或本地源码），跳过初始化。"
+        return 0
+    fi
+
+    local files=(
+        "AGENTS.md"
+        "SOUL.md"
+        "TOOLS.md"
+        "IDENTITY.md"
+        "USER.md"
+        "HEARTBEAT.md"
+    )
+    local is_brand_new=0
+    if is_brand_new_workspace_dir "$workspace"; then
+        is_brand_new=1
+        files+=("BOOTSTRAP.md")
+    fi
+
+    local copied=0
+    local skipped=0
+    local failed=0
+    local name=""
+    for name in "${files[@]}"; do
+        local src="${template_dir%/}/${name}"
+        local dst="${workspace%/}/${name}"
+
+        if [[ ! -f "$src" ]]; then
+            failed=$((failed + 1))
+            log warn "Missing DingTalk workspace template: $src"
+            continue
+        fi
+
+        if [[ -e "$dst" ]]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        if cp "$src" "$dst" 2>/dev/null; then
+            copied=$((copied + 1))
+        else
+            failed=$((failed + 1))
+            log warn "Failed to seed DingTalk workspace template: $dst"
+        fi
+    done
+
+    if [[ "$copied" -gt 0 ]]; then
+        echo -e "${SUCCESS}✓${NC} DingTalk workspace 模板初始化完成: ${INFO}${workspace}${NC} ${MUTED}(新建 ${copied}，跳过 ${skipped})${NC}"
+    fi
+    if [[ "$failed" -gt 0 ]]; then
+        echo -e "${WARN}→${NC} DingTalk workspace 模板有 ${failed} 个文件初始化失败（已跳过）。"
+    fi
+}
+
+ensure_openclaw_plugin_load_path_from_npm_global() {
+    # Ensure ~/.openclaw/openclaw.json contains plugins.load.paths entry pointing to the
+    # globally-installed npm package dir (npm root -g / <pkg>).
+    #
+    # This is required because Openclaw does NOT automatically scan npm global node_modules.
+    local pkg="$1"
+    local cfg="${CONFIG_FILE:-$HOME/.openclaw/openclaw.json}"
+
+    if [[ -z "$pkg" || ! -f "$cfg" ]]; then
+        return 1
+    fi
+    if ! command -v npm &>/dev/null || ! command -v node &>/dev/null; then
+        return 1
+    fi
+
+    local npm_root=""
+    npm_root="$(npm root -g 2>/dev/null || true)"
+    if [[ -z "$npm_root" ]]; then
+        return 1
+    fi
+
+    local plugin_dir="${npm_root%/}/${pkg}"
+    if [[ ! -d "$plugin_dir" ]]; then
+        return 1
+    fi
+
+    CONFIG_FILE="$cfg" PKG="$pkg" PLUGIN_DIR="$plugin_dir" node -e '
+const fs = require("fs");
+const path = require("path");
+
+const cfgPath = process.env.CONFIG_FILE;
+const pkg = String(process.env.PKG || "").trim();
+const pluginDir = String(process.env.PLUGIN_DIR || "").trim();
+if (!cfgPath || !pkg || !pluginDir) process.exit(1);
+
+let cfg;
+try { cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8")); } catch { process.exit(2); }
+
+cfg.plugins ||= {};
+cfg.plugins.load ||= {};
+
+let paths = Array.isArray(cfg.plugins.load.paths) ? cfg.plugins.load.paths : [];
+paths = paths
+  .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+  .filter(Boolean);
+
+const resolvedPluginDir = path.resolve(pluginDir);
+
+const isSame = (p) => {
+  try { return path.resolve(p) === resolvedPluginDir; } catch { return false; }
+};
+
+const looksLikeGlobalPkgPath = (p) => {
+  const normalized = p.replace(/\\\\/g, "/");
+  return normalized.includes("/node_modules/") && normalized.endsWith("/" + pkg);
+};
+
+const exists = (p) => {
+  try { return fs.existsSync(p); } catch { return false; }
+};
+
+// Remove duplicates, and prune stale global paths for this package if they no longer exist.
+paths = paths.filter((p) => {
+  if (isSame(p)) return false;
+  if (looksLikeGlobalPkgPath(p) && !exists(p)) return false;
+  return true;
+});
+
+// Prepend so config-origin overrides workspace/global/bundled copies.
+paths = [pluginDir, ...paths];
+cfg.plugins.load.paths = paths;
+
+fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+' 2>/dev/null || true
+
+    return 0
+}
+
+get_openclaw_extensions_version() {
+    # Return plugin version only if it's discoverable by Openclaw's default discovery dirs
+    # (workspace/.openclaw/extensions or ~/.openclaw/extensions). Does NOT report npm -g versions.
+    local pkg="$1"
+    local v=""
+
+    local global_dir="$HOME/.openclaw/extensions/$pkg"
+    if [[ -f "$global_dir/package.json" ]]; then
+        v="$(grep '"version"' "$global_dir/package.json" 2>/dev/null | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)"
+    fi
+    if [[ -n "$v" ]]; then
+        echo "$v"
+        return 0
+    fi
+
+    local ws=""
+    ws="$(resolve_openclaw_agent_workspace_dir)"
+    local ws_dir="${ws%/}/.openclaw/extensions/$pkg"
+    if [[ -f "$ws_dir/package.json" ]]; then
+        v="$(grep '"version"' "$ws_dir/package.json" 2>/dev/null | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)"
+    fi
+
+    echo "$v"
+    return 0
+}
+
+config_references_plugin_or_channel() {
+    local plugin_id="$1"
+    local cfg="${CONFIG_FILE:-$HOME/.openclaw/openclaw.json}"
+    if [[ -z "$plugin_id" || ! -f "$cfg" || ! "$(command -v node 2>/dev/null)" ]]; then
+        return 1
+    fi
+    CONFIG_FILE="$cfg" PLUGIN_ID="$plugin_id" node -e '
+const fs = require("fs");
+const p = process.env.CONFIG_FILE;
+const id = String(process.env.PLUGIN_ID || "").trim();
+if (!id) process.exit(1);
+let cfg;
+try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch { process.exit(1); }
+const hasPlugin = Boolean(cfg?.plugins?.entries && Object.prototype.hasOwnProperty.call(cfg.plugins.entries, id));
+const hasChannel = Boolean(cfg?.channels && Object.prototype.hasOwnProperty.call(cfg.channels, id));
+process.exit(hasPlugin || hasChannel ? 0 : 2);
+' >/dev/null 2>&1
+}
+
+get_openclaw_plugin_loaded_meta() {
+    local plugin_id="$1"
+    local claw="${CLAWDBOT_BIN:-}"
+    if [[ -z "$claw" ]]; then
+        claw="$(resolve_clawdbot_bin || true)"
+    fi
+    if [[ -z "$claw" ]]; then
+        return 1
+    fi
+
+    local json=""
+    json="$("$claw" plugins list --json 2>/dev/null || true)"
+    if [[ -z "$json" ]]; then
+        return 1
+    fi
+
+    # Print a compact JSON object: { id, status, version, origin, source, error }
+    # (The script caller can parse or display it.)
+    printf '%s' "$json" | PLUGIN_ID="$plugin_id" node -e '
+const fs = require("fs");
+const id = (process.env.PLUGIN_ID || "").trim();
+if (!id) process.exit(1);
+let data;
+try { data = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(1); }
+const plugins = Array.isArray(data?.plugins) ? data.plugins : [];
+const p = plugins.find((x) => x?.id === id || x?.name === id);
+if (!p) process.exit(2);
+const out = {
+  id: p.id ?? id,
+  status: p.status ?? "",
+  version: p.version ?? "",
+  origin: p.origin ?? "",
+  source: p.source ?? "",
+  error: p.error ?? "",
+};
+process.stdout.write(JSON.stringify(out));
+' 2>/dev/null
+}
+
 get_latest_version() {
     local pkg="$1"
     local tag="${2:-latest}"
@@ -3409,11 +3668,22 @@ get_latest_version() {
         pkg="$CLAWDBOT_NPM_PKG"
     fi
 
-    version="$(npm view "${pkg}@${tag}" version 2>/dev/null || true)"
+    # For openclaw core package, use the safe version resolver to skip blocked versions.
+    if [[ "$pkg" == "$CLAWDBOT_NPM_PKG" || "$pkg" == "openclaw" ]]; then
+        version="$(resolve_safe_openclaw_version "$tag")"
+        echo "$version"
+        return
+    fi
+
+    # 使用 --prefer-online 绕过本地缓存，确保获取最新版本信息
+    version="$(npm view "${pkg}@${tag}" version --prefer-online 2>/dev/null || true)"
     echo "$version"
 }
 
 run_status_flow() {
+    # Clear npm cache for accurate latest version info
+    clear_npm_cache
+
     echo ""
     echo -e "${ACCENT}${BOLD}┌────────────────────────────────────────┐${NC}"
     echo -e "${ACCENT}${BOLD}│  🦀 Openclaw 状态                       │${NC}"
@@ -3451,53 +3721,17 @@ run_status_flow() {
     local dingtalk_latest=""
     dingtalk_latest="$(get_latest_version "$CHANNEL_PKG_DINGTALK" "latest")"
 
-    local feishu_installed=""
-    feishu_installed="$(get_installed_version "$CHANNEL_PKG_FEISHU")"
-    local feishu_latest=""
-    feishu_latest="$(get_latest_version "$CHANNEL_PKG_FEISHU" "latest")"
-
-    local wecom_installed=""
-    wecom_installed="$(get_installed_version "$CHANNEL_PKG_WECOM")"
-    local wecom_latest=""
-    wecom_latest="$(get_latest_version "$CHANNEL_PKG_WECOM" "latest")"
-
     # DingTalk
     if [[ -n "$dingtalk_installed" ]]; then
         if [[ -z "$dingtalk_latest" ]]; then
-            printf "  ${MUTED}├─${NC} 钉钉         ${SUCCESS}✓${NC} %s ${MUTED}[${CHANNEL_PKG_DINGTALK}]${NC}\n" "$dingtalk_installed"
+            printf "  ${MUTED}└─${NC} 钉钉         ${SUCCESS}✓${NC} %s ${MUTED}[${CHANNEL_PKG_DINGTALK}]${NC}\n" "$dingtalk_installed"
         elif [[ "$dingtalk_installed" == "$dingtalk_latest" ]]; then
-            printf "  ${MUTED}├─${NC} 钉钉         ${SUCCESS}✓${NC} %s ${MUTED}(最新) [${CHANNEL_PKG_DINGTALK}]${NC}\n" "$dingtalk_installed"
+            printf "  ${MUTED}└─${NC} 钉钉         ${SUCCESS}✓${NC} %s ${MUTED}(最新) [${CHANNEL_PKG_DINGTALK}]${NC}\n" "$dingtalk_installed"
         else
-            printf "  ${MUTED}├─${NC} 钉钉         ${WARN}!${NC} %s ${MUTED}(最新: %s) [${CHANNEL_PKG_DINGTALK}]${NC}\n" "$dingtalk_installed" "$dingtalk_latest"
+            printf "  ${MUTED}└─${NC} 钉钉         ${WARN}!${NC} %s ${MUTED}(最新: %s) [${CHANNEL_PKG_DINGTALK}]${NC}\n" "$dingtalk_installed" "$dingtalk_latest"
         fi
     else
-        echo -e "  ${MUTED}├─${NC} 钉钉         ${MUTED}○${NC} 未安装 ${MUTED}[${CHANNEL_PKG_DINGTALK}]${NC}"
-    fi
-
-    # Feishu
-    if [[ -n "$feishu_installed" ]]; then
-        if [[ -z "$feishu_latest" ]]; then
-            printf "  ${MUTED}├─${NC} 飞书         ${SUCCESS}✓${NC} %s ${MUTED}[${CHANNEL_PKG_FEISHU}]${NC}\n" "$feishu_installed"
-        elif [[ "$feishu_installed" == "$feishu_latest" ]]; then
-            printf "  ${MUTED}├─${NC} 飞书         ${SUCCESS}✓${NC} %s ${MUTED}(最新) [${CHANNEL_PKG_FEISHU}]${NC}\n" "$feishu_installed"
-        else
-            printf "  ${MUTED}├─${NC} 飞书         ${WARN}!${NC} %s ${MUTED}(最新: %s) [${CHANNEL_PKG_FEISHU}]${NC}\n" "$feishu_installed" "$feishu_latest"
-        fi
-    else
-        echo -e "  ${MUTED}├─${NC} 飞书         ${MUTED}○${NC} 未安装 ${MUTED}[${CHANNEL_PKG_FEISHU}]${NC}"
-    fi
-
-    # WeCom
-    if [[ -n "$wecom_installed" ]]; then
-        if [[ -z "$wecom_latest" ]]; then
-            printf "  ${MUTED}└─${NC} 企业微信     ${SUCCESS}✓${NC} %s ${MUTED}[${CHANNEL_PKG_WECOM}]${NC}\n" "$wecom_installed"
-        elif [[ "$wecom_installed" == "$wecom_latest" ]]; then
-            printf "  ${MUTED}└─${NC} 企业微信     ${SUCCESS}✓${NC} %s ${MUTED}(最新) [${CHANNEL_PKG_WECOM}]${NC}\n" "$wecom_installed"
-        else
-            printf "  ${MUTED}└─${NC} 企业微信     ${WARN}!${NC} %s ${MUTED}(最新: %s) [${CHANNEL_PKG_WECOM}]${NC}\n" "$wecom_installed" "$wecom_latest"
-        fi
-    else
-        echo -e "  ${MUTED}└─${NC} 企业微信     ${MUTED}○${NC} 未安装 ${MUTED}[${CHANNEL_PKG_WECOM}]${NC}"
+        echo -e "  ${MUTED}└─${NC} 钉钉         ${MUTED}○${NC} 未安装 ${MUTED}[${CHANNEL_PKG_DINGTALK}]${NC}"
     fi
 
     echo ""
@@ -3755,131 +3989,94 @@ upgrade_clawdbot_core() {
 
 upgrade_dingtalk_plugin() {
     local current=""
+    # Plugins are installed via npm -g; `get_installed_version` covers both ~/.openclaw/extensions and npm -g.
     current="$(get_installed_version "$CHANNEL_PKG_DINGTALK")"
     local latest=""
-    latest="$(get_latest_version "$CHANNEL_PKG_DINGTALK" "latest")"
-
-    if [[ -z "$current" ]]; then
-        echo -e "${MUTED}○${NC} 钉钉插件未安装"
-        return 0
+    local tag="latest"
+    if [[ "$USE_BETA" == "1" ]]; then
+        local beta_version=""
+        beta_version="$(get_latest_version "$CHANNEL_PKG_DINGTALK" "beta")"
+        if [[ -n "$beta_version" ]]; then
+            tag="beta"
+        fi
     fi
+    latest="$(get_latest_version "$CHANNEL_PKG_DINGTALK" "$tag")"
 
-    if [[ "$current" == "$latest" ]]; then
+    local current_label="${current:-未安装}"
+    if [[ -n "$latest" && "$current" == "$latest" ]]; then
         echo -e "${SUCCESS}✓${NC} 钉钉插件已是最新版本 (${INFO}$current${NC})"
-        return 0
+    else
+        echo -e "${WARN}→${NC} 升级钉钉插件: ${INFO}${current_label}${NC} → ${INFO}${latest:-$tag}${NC}"
     fi
 
-    spinner_start "升级钉钉插件: $current → $latest"
-    local claw=""
-    claw="$(resolve_clawdbot_bin || true)"
-    local npm_peer_deps_flag=""
-    if [[ "${NPM_LEGACY_PEER_DEPS:-0}" == "1" ]]; then
-        npm_peer_deps_flag="--legacy-peer-deps"
+    # Always ensure the plugin is installed and discoverable by Openclaw (npm -g + plugins.load.paths).
+    if [[ -z "$current" ]] && ! config_references_plugin_or_channel "$CHANNEL_PKG_DINGTALK"; then
+        echo -e "${MUTED}○${NC} 未检测到钉钉插件配置，跳过安装/升级"
+        return 0
     fi
-    local npm_flags="--loglevel $NPM_LOGLEVEL ${NPM_SILENT_FLAG:+$NPM_SILENT_FLAG} --no-fund --no-audit $npm_peer_deps_flag"
-    if [[ -n "$claw" ]]; then
-        if "$claw" plugins update "$CHANNEL_PKG_DINGTALK" >/dev/null 2>&1; then
-            spinner_stop 0 "钉钉插件已升级到 $latest"
-            restart_gateway_if_running "$claw"
-            return 0
+    if ! install_channel_plugin dingtalk "${CHANNEL_PKG_DINGTALK}@${tag}"; then
+        return 1
+    fi
+
+    # Verify the actually loaded plugin version/source (catches shadowing by workspace/bundled plugins).
+    if [[ -n "$latest" ]]; then
+        local meta=""
+        meta="$(get_openclaw_plugin_loaded_meta "$CHANNEL_PKG_DINGTALK" || true)"
+        if [[ -n "$meta" ]]; then
+            local loaded_version=""
+            loaded_version="$(printf '%s' "$meta" | node -e '
+const fs = require("fs");
+let obj = {};
+try { obj = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(0); }
+process.stdout.write(String(obj?.version ?? "").trim());
+' 2>/dev/null || true)"
+            if [[ -n "$loaded_version" && "$loaded_version" != "$latest" ]]; then
+                echo -e "${WARN}→${NC} 注意：Openclaw 当前实际加载的钉钉插件版本为 ${INFO}${loaded_version}${NC}（期望: ${INFO}${latest}${NC}）"
+                echo -e "${MUTED}   可能原因：workspace 插件覆盖 / bundled 插件覆盖 / 仍未重启 Gateway。${NC}"
+                echo -e "${MUTED}   解析信息: ${meta}${NC}"
+
+                echo -e "${WARN}→${NC} 尝试强制重装到 ${INFO}~/.openclaw/extensions/${CHANNEL_PKG_DINGTALK}${NC}..."
+                rm -rf "$HOME/.openclaw/extensions/$CHANNEL_PKG_DINGTALK" 2>/dev/null || true
+
+                # Also remove a workspace override if present (workspace origin has higher priority than global).
+                local ws=""
+                ws="$(CONFIG_FILE="$HOME/.openclaw/openclaw.json" node -e '
+const fs = require("fs");
+const p = process.env.CONFIG_FILE;
+let cfg;
+try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch { process.exit(0); }
+const v = cfg?.agents?.defaults?.workspace;
+if (typeof v === "string" && v.trim()) process.stdout.write(v.trim());
+' 2>/dev/null || true)"
+                if [[ -z "$ws" ]]; then
+                    ws="$HOME/.openclaw/workspace"
+                fi
+                rm -rf "${ws%/}/.openclaw/extensions/$CHANNEL_PKG_DINGTALK" 2>/dev/null || true
+
+                if install_channel_plugin dingtalk "${CHANNEL_PKG_DINGTALK}@${tag}"; then
+                    local meta2=""
+                    meta2="$(get_openclaw_plugin_loaded_meta "$CHANNEL_PKG_DINGTALK" || true)"
+                    local loaded2=""
+                    loaded2="$(printf '%s' "$meta2" | node -e '
+const fs = require("fs");
+let obj = {};
+try { obj = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(0); }
+process.stdout.write(String(obj?.version ?? "").trim());
+' 2>/dev/null || true)"
+                    if [[ -n "$loaded2" && "$loaded2" == "$latest" ]]; then
+                        echo -e "${SUCCESS}✓${NC} 钉钉插件已强制更新到 ${INFO}${loaded2}${NC}"
+                    else
+                        echo -e "${WARN}→${NC} 强制重装后仍未命中期望版本（期望: ${INFO}${latest}${NC}）"
+                        if [[ -n "$meta2" ]]; then
+                            echo -e "${MUTED}   解析信息: ${meta2}${NC}"
+                        fi
+                    fi
+                fi
+            fi
         fi
     fi
 
-    # Fallback to npm
-    if npm $npm_flags install -g "${CHANNEL_PKG_DINGTALK}@latest" >/dev/null 2>&1; then
-        spinner_stop 0 "钉钉插件已升级到 $latest"
-        restart_gateway_if_running "$claw"
-        return 0
-    fi
-
-    spinner_stop 1 "升级失败"
-    return 1
-}
-
-upgrade_feishu_plugin() {
-    local current=""
-    current="$(get_installed_version "$CHANNEL_PKG_FEISHU")"
-    local latest=""
-    latest="$(get_latest_version "$CHANNEL_PKG_FEISHU" "latest")"
-
-    if [[ -z "$current" ]]; then
-        echo -e "${MUTED}○${NC} 飞书插件未安装"
-        return 0
-    fi
-
-    if [[ "$current" == "$latest" ]]; then
-        echo -e "${SUCCESS}✓${NC} 飞书插件已是最新版本 (${INFO}$current${NC})"
-        return 0
-    fi
-
-    spinner_start "升级飞书插件: $current → $latest"
-    local claw=""
-    claw="$(resolve_clawdbot_bin || true)"
-    local npm_peer_deps_flag=""
-    if [[ "${NPM_LEGACY_PEER_DEPS:-0}" == "1" ]]; then
-        npm_peer_deps_flag="--legacy-peer-deps"
-    fi
-    local npm_flags="--loglevel $NPM_LOGLEVEL ${NPM_SILENT_FLAG:+$NPM_SILENT_FLAG} --no-fund --no-audit $npm_peer_deps_flag"
-    if [[ -n "$claw" ]]; then
-        if "$claw" plugins update "$CHANNEL_PKG_FEISHU" >/dev/null 2>&1; then
-            spinner_stop 0 "飞书插件已升级到 $latest"
-            restart_gateway_if_running "$claw"
-            return 0
-        fi
-    fi
-
-    # Fallback to npm
-    if npm $npm_flags install -g "${CHANNEL_PKG_FEISHU}@latest" >/dev/null 2>&1; then
-        spinner_stop 0 "飞书插件已升级到 $latest"
-        restart_gateway_if_running "$claw"
-        return 0
-    fi
-
-    spinner_stop 1 "升级失败"
-    return 1
-}
-
-upgrade_wecom_plugin() {
-    local current=""
-    current="$(get_installed_version "$CHANNEL_PKG_WECOM")"
-    local latest=""
-    latest="$(get_latest_version "$CHANNEL_PKG_WECOM" "latest")"
-
-    if [[ -z "$current" ]]; then
-        echo -e "${MUTED}○${NC} 企业微信插件未安装"
-        return 0
-    fi
-
-    if [[ "$current" == "$latest" ]]; then
-        echo -e "${SUCCESS}✓${NC} 企业微信插件已是最新版本 (${INFO}$current${NC})"
-        return 0
-    fi
-
-    spinner_start "升级企业微信插件: $current → $latest"
-    local claw=""
-    claw="$(resolve_clawdbot_bin || true)"
-    local npm_peer_deps_flag=""
-    if [[ "${NPM_LEGACY_PEER_DEPS:-0}" == "1" ]]; then
-        npm_peer_deps_flag="--legacy-peer-deps"
-    fi
-    local npm_flags="--loglevel $NPM_LOGLEVEL ${NPM_SILENT_FLAG:+$NPM_SILENT_FLAG} --no-fund --no-audit $npm_peer_deps_flag"
-    if [[ -n "$claw" ]]; then
-        if "$claw" plugins update "$CHANNEL_PKG_WECOM" >/dev/null 2>&1; then
-            spinner_stop 0 "企业微信插件已升级到 $latest"
-            restart_gateway_if_running "$claw"
-            return 0
-        fi
-    fi
-
-    # Fallback to npm
-    if npm $npm_flags install -g "${CHANNEL_PKG_WECOM}@latest" >/dev/null 2>&1; then
-        spinner_stop 0 "企业微信插件已升级到 $latest"
-        restart_gateway_if_running "$claw"
-        return 0
-    fi
-
-    spinner_stop 1 "升级失败"
-    return 1
+    return 0
 }
 
 upgrade_to_beta() {
@@ -3910,8 +4107,6 @@ upgrade_all() {
 
 upgrade_all_plugins() {
     upgrade_dingtalk_plugin || true
-    upgrade_feishu_plugin || true
-    upgrade_wecom_plugin || true
 }
 
 prompt_gateway_restart() {
@@ -3933,6 +4128,9 @@ run_upgrade_flow() {
     # Detect CN mirrors
     detect_cn_mirrors || true
     apply_cn_mirrors
+
+    # Clear npm cache before upgrade
+    clear_npm_cache
 
     # Migrate deprecated config keys before any Openclaw CLI runs
     migrate_browser_controlurl || true
@@ -4131,7 +4329,7 @@ config_set() {
     
     mkdir -p "$CONFIG_DIR"
     
-    node -e "
+    CONFIG_VALUE="$value" node -e "
         const fs = require('fs');
         let cfg = {};
         try { 
@@ -4148,11 +4346,12 @@ config_set() {
         }
         
         // Try to parse as JSON, otherwise use as string
+        const rawValue = process.env.CONFIG_VALUE ?? '';
         let parsedValue;
         try {
-            parsedValue = JSON.parse(\`$value\`);
+            parsedValue = JSON.parse(rawValue);
         } catch {
-            parsedValue = \`$value\`;
+            parsedValue = rawValue;
         }
         obj[keys[keys.length - 1]] = parsedValue;
         
@@ -4213,17 +4412,43 @@ show_current_config() {
     fi
 }
 
+# Get available models from openclaw.json
+# Returns lines of "provider/model_id|display_name" format
+config_get_available_models() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo ""
+        return 1
+    fi
+    node -e "
+        const fs = require('fs');
+        try {
+            const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
+            const providers = cfg.models?.providers || {};
+            for (const [providerName, provider] of Object.entries(providers)) {
+                const models = provider.models || [];
+                for (const model of models) {
+                    const id = model.id || '';
+                    const name = model.name || id;
+                    if (id) {
+                        console.log(providerName + '/' + id + '|' + name);
+                    }
+                }
+            }
+        } catch (e) {}
+    " 2>/dev/null
+}
+
 # Update AI model configuration (baseUrl, apiKey, model)
 config_update_model() {
     clack_step "${INFO}修改 AI 模型配置${NC}"
     echo ""
-    
+
     # Show current values
     local current_base_url=""
     current_base_url="$(config_get 'models.providers.dashscope.baseUrl')"
     local current_model=""
     current_model="$(config_get 'agents.defaults.model.primary')"
-    
+
     if [[ -n "$current_base_url" ]]; then
         echo -e "${MUTED}当前 Base URL: ${current_base_url}${NC}"
     fi
@@ -4231,52 +4456,92 @@ config_update_model() {
         echo -e "${MUTED}当前模型: ${current_model}${NC}"
     fi
     echo ""
-    
+
     # Prompt for new values
     local new_base_url=""
     printf "${ACCENT}◆${NC} 百炼 Base URL [${MUTED}回车保留当前${NC}]: " > /dev/tty
     read -r new_base_url < /dev/tty || true
-    
+
     local new_api_key=""
     printf "${ACCENT}◆${NC} 百炼 API Key [${MUTED}回车保留当前${NC}]: " > /dev/tty
     read -r new_api_key < /dev/tty || true
-    
+
     # Model selection
     echo ""
-    echo -e "${ACCENT}◆${NC} 选择模型 (回车保留当前)"
-    local model_options=(
-        "qwen3-235b-a22b (推荐)"
-        "qwen-coder-plus-latest"
-        "qwen-plus-latest"
-        "qwen-max-latest"
-        "保留当前模型"
-    )
-    local model_choice
-    model_choice=$(clack_select "选择模型" "${model_options[@]}")
-    
     local new_model=""
-    case $model_choice in
-        0) new_model="qwen3-235b-a22b" ;;
-        1) new_model="qwen-coder-plus-latest" ;;
-        2) new_model="qwen-plus-latest" ;;
-        3) new_model="qwen-max-latest" ;;
-        4) new_model="" ;;
-    esac
-    
+
+    # Determine effective base_url (new value or current)
+    local effective_base_url="${new_base_url:-$current_base_url}"
+    local CODING_PLAN_URL="https://coding.dashscope.aliyuncs.com/v1"
+
+    if [[ "$effective_base_url" == "$CODING_PLAN_URL" ]]; then
+        # Coding Plan only supports these models
+        local model_options=(
+            "dashscope/qwen3-max-2026-01-23  - Qwen3 Max Thinking（推荐）"
+            "dashscope/qwen3-coder-plus  - Qwen3 Coder Plus"
+            "保留当前模型"
+        )
+        local model_ids=(
+            "dashscope/qwen3-max-2026-01-23"
+            "dashscope/qwen3-coder-plus"
+        )
+
+        local model_choice
+        model_choice=$(clack_select "选择模型" "${model_options[@]}")
+
+        if [[ $model_choice -lt 2 ]]; then
+            new_model="${model_ids[$model_choice]}"
+        fi
+        # else: selected "保留当前模型", new_model stays empty
+    else
+        # For other base URLs, read available models from config file
+        local model_list=""
+        model_list="$(config_get_available_models)"
+
+        if [[ -z "$model_list" ]]; then
+            echo -e "${WARN}◆${NC} 未在配置中找到可用模型"
+            echo -e "${MUTED}  请先在 openclaw.json 的 models.providers 中配置模型${NC}"
+        else
+            # Build model options array
+            local model_options=()
+            local model_ids=()
+            while IFS= read -r line; do
+                if [[ -n "$line" ]]; then
+                    local model_id="${line%%|*}"
+                    local model_name="${line#*|}"
+                    model_options+=("${model_id}  - ${model_name}")
+                    model_ids+=("$model_id")
+                fi
+            done <<< "$model_list"
+
+            # Add "keep current" option
+            model_options+=("保留当前模型")
+
+            local model_choice
+            model_choice=$(clack_select "选择模型" "${model_options[@]}")
+
+            local num_models=${#model_ids[@]}
+            if [[ $model_choice -lt $num_models ]]; then
+                new_model="${model_ids[$model_choice]}"
+            fi
+            # else: selected "保留当前模型", new_model stays empty
+        fi
+    fi
+
     # Backup and apply changes
     if [[ -n "$new_base_url" || -n "$new_api_key" || -n "$new_model" ]]; then
         config_backup
-        
+
         if [[ -n "$new_base_url" ]]; then
             config_set "models.providers.dashscope.baseUrl" "\"$new_base_url\""
             echo -e "${SUCCESS}✓${NC} Base URL 已更新"
         fi
-        
+
         if [[ -n "$new_api_key" ]]; then
             config_set "models.providers.dashscope.apiKey" "\"$new_api_key\""
             echo -e "${SUCCESS}✓${NC} API Key 已更新"
         fi
-        
+
         if [[ -n "$new_model" ]]; then
             config_set "agents.defaults.model.primary" "\"$new_model\""
             echo -e "${SUCCESS}✓${NC} 模型已更新为 $new_model"
@@ -4362,59 +4627,38 @@ config_add_channel() {
     # Collect channel credentials
     case "$channel" in
         dingtalk)
-            configure_channel_dingtalk || return 1
+            if [[ -z "${CHANNEL_DINGTALK_CLIENT_ID:-}" || -z "${CHANNEL_DINGTALK_CLIENT_SECRET:-}" ]]; then
+                configure_channel_dingtalk || return 1
+            fi
             config_backup
             config_set "channels.clawdbot-dingtalk.enabled" "true"
             config_set "channels.clawdbot-dingtalk.clientId" "\"${CHANNEL_DINGTALK_CLIENT_ID}\""
             config_set "channels.clawdbot-dingtalk.clientSecret" "\"${CHANNEL_DINGTALK_CLIENT_SECRET}\""
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.timeoutSeconds" "60"
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.tools.webSearch.enabled" "false"
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.tools.codeInterpreter.enabled" "false"
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.tools.webParser.enabled" "false"
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.tools.wan26Media.enabled" "false"
+            config_set "channels.clawdbot-dingtalk.aliyunMcp.tools.wan26Media.autoSendToDingtalk" "true"
             config_set "plugins.entries.clawdbot-dingtalk.enabled" "true"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.timeoutSeconds" "60"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.webSearch.enabled" "false"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.codeInterpreter.enabled" "false"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.webParser.enabled" "false"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.wan26Media.enabled" "false"
-            config_set "plugins.entries.clawdbot-dingtalk.config.aliyunMcp.tools.wan26Media.autoSendToDingtalk" "true"
+            config_delete "plugins.entries.clawdbot-dingtalk.config"
             config_set "tools.web.search.enabled" "false"
             ;;
-        feishu)
-            configure_channel_feishu || return 1
-            config_backup
-            config_set "channels.feishu.enabled" "true"
-            config_set "channels.feishu.appId" "\"${CHANNEL_FEISHU_APP_ID}\""
-            config_set "channels.feishu.appSecret" "\"${CHANNEL_FEISHU_APP_SECRET}\""
-            config_set "plugins.entries.${CHANNEL_PKG_FEISHU}.enabled" "true"
-            ;;
-        wecom)
-            configure_channel_wecom || return 1
-            config_backup
-            config_set "channels.wecom.enabled" "true"
-            config_set "channels.wecom.token" "\"${CHANNEL_WECOM_TOKEN}\""
-            config_set "channels.wecom.encodingAesKey" "\"${CHANNEL_WECOM_ENCODING_AES_KEY}\""
-            config_set "plugins.entries.${CHANNEL_PKG_WECOM}.enabled" "true"
-            ;;
     esac
-    
+
     echo -e "${SUCCESS}✓${NC} 渠道配置已添加"
 }
 
 # Remove channel config
 config_remove_channel() {
     local channel="$1"
-    
+
     config_backup
-    
+
     case "$channel" in
         dingtalk)
             config_delete "channels.clawdbot-dingtalk"
             config_delete "plugins.entries.clawdbot-dingtalk"
-            ;;
-        feishu)
-            config_delete "channels.feishu"
-            config_delete "plugins.entries.${CHANNEL_PKG_FEISHU}"
-            ;;
-        wecom)
-            config_delete "channels.wecom"
-            config_delete "plugins.entries.${CHANNEL_PKG_WECOM}"
             ;;
     esac
     
@@ -4423,66 +4667,73 @@ config_remove_channel() {
 
 # Configuration submenu
 show_configure_menu() {
-    echo ""
-    echo -e "${ACCENT}${BOLD}┌─────────────────────────────────────────┐${NC}"
-    echo -e "${ACCENT}${BOLD}│  ⚙️  配置管理                           │${NC}"
-    echo -e "${ACCENT}${BOLD}└─────────────────────────────────────────┘${NC}"
-    echo ""
+    while true; do
+        echo ""
+        echo -e "${ACCENT}${BOLD}┌─────────────────────────────────────────┐${NC}"
+        echo -e "${ACCENT}${BOLD}│  ⚙️  配置管理                           │${NC}"
+        echo -e "${ACCENT}${BOLD}└─────────────────────────────────────────┘${NC}"
+        echo ""
 
-    # Show config status
-    if config_exists; then
-        echo -e "  ${SUCCESS}●${NC} 配置文件存在: ${MUTED}$CONFIG_FILE${NC}"
-    else
-        echo -e "  ${WARN}○${NC} 配置文件不存在"
-    fi
-    echo ""
+        # Show config status
+        if config_exists; then
+            echo -e "  ${SUCCESS}●${NC} 配置文件存在: ${MUTED}$CONFIG_FILE${NC}"
+        else
+            echo -e "  ${WARN}○${NC} 配置文件不存在"
+        fi
+        echo ""
 
-    local config_menu_options=(
-        "查看当前配置           - 显示 openclaw.json 内容"
-        "修改 AI 模型配置       - 更新 DashScope API/模型"
-        "修改 Gateway 配置      - 更新端口/绑定地址"
-        "重新生成 Token         - 生成新的 Gateway Token"
-        "全新配置向导           - 从头创建配置（覆盖）"
-        "返回主菜单"
-    )
+        local config_menu_options=(
+            "查看当前配置           - 显示 openclaw.json 内容"
+            "修改 AI 模型配置       - 更新 DashScope API/模型"
+            "修改 Gateway 配置      - 更新端口/绑定地址"
+            "重新生成 Token         - 生成新的 Gateway Token"
+            "全新配置向导           - 从头创建配置（覆盖）"
+            "返回主菜单"
+        )
 
-    local config_choice
-    config_choice=$(clack_select "选择操作" "${config_menu_options[@]}")
+        local config_choice
+        config_choice=$(clack_select "选择操作" "${config_menu_options[@]}")
 
-    echo ""
+        echo ""
 
-    case $config_choice in
-        0)
-            show_current_config
-            ;;
-        1)
-            if ! config_exists; then
-                echo -e "${WARN}→${NC} 配置文件不存在，请先运行「全新配置向导」"
-            else
-                config_update_model
-            fi
-            ;;
-        2)
-            if ! config_exists; then
-                echo -e "${WARN}→${NC} 配置文件不存在，请先运行「全新配置向导」"
-            else
-                config_update_gateway
-            fi
-            ;;
-        3)
-            if ! config_exists; then
-                echo -e "${WARN}→${NC} 配置文件不存在，请先运行「全新配置向导」"
-            else
-                config_regenerate_token
-            fi
-            ;;
-        4)
-            configure_clawdbot_interactive
-            ;;
-        5)
-            return 0
-            ;;
-    esac
+        case $config_choice in
+            0)
+                show_current_config
+                ;;
+            1)
+                if ! config_exists; then
+                    echo -e "${WARN}→${NC} 配置文件不存在，请先运行「全新配置向导」"
+                else
+                    config_update_model
+                fi
+                ;;
+            2)
+                if ! config_exists; then
+                    echo -e "${WARN}→${NC} 配置文件不存在，请先运行「全新配置向导」"
+                else
+                    config_update_gateway
+                fi
+                ;;
+            3)
+                if ! config_exists; then
+                    echo -e "${WARN}→${NC} 配置文件不存在，请先运行「全新配置向导」"
+                else
+                    config_regenerate_token
+                fi
+                ;;
+            4)
+                configure_clawdbot_interactive
+                ;;
+            5)
+                return 0
+                ;;
+        esac
+
+        # 操作完成后暂停，让用户看到结果
+        echo ""
+        read -n 1 -s -r -p "$(echo -e "${MUTED}按任意键返回菜单...${NC}")" < /dev/tty
+        echo ""
+    done
 }
 
 run_configure_flow() {
@@ -4495,9 +4746,6 @@ run_configure_flow() {
     fi
 
     show_configure_menu
-
-    echo ""
-    clack_outro "${SUCCESS}配置完成${NC}"
 }
 
 # ============================================
@@ -4533,24 +4781,14 @@ repair_reinstall_clawdbot() {
 }
 
 repair_reinstall_dingtalk() {
-    local claw=""
-    claw="$(resolve_clawdbot_bin || true)"
-    local npm_peer_deps_flag=""
-    if [[ "${NPM_LEGACY_PEER_DEPS:-0}" == "1" ]]; then
-        npm_peer_deps_flag="--legacy-peer-deps"
+    echo -e "${WARN}→${NC} 重新安装钉钉插件..."
+    # Ensure plugin is installed into Openclaw's discovery dirs (workspace/global extensions).
+    if install_channel_plugin dingtalk "${CHANNEL_PKG_DINGTALK}@latest"; then
+        echo -e "${SUCCESS}✓${NC} 钉钉插件已重新安装"
+        return 0
     fi
-    local npm_flags="--loglevel $NPM_LOGLEVEL ${NPM_SILENT_FLAG:+$NPM_SILENT_FLAG} --no-fund --no-audit $npm_peer_deps_flag"
-
-    spinner_start "重新安装钉钉插件..."
-    npm uninstall -g clawdbot-dingtalk 2>/dev/null || true
-
-    if [[ -n "$claw" ]]; then
-        "$claw" plugins install clawdbot-dingtalk >/dev/null 2>&1 || npm $npm_flags install -g clawdbot-dingtalk >/dev/null 2>&1 || true
-    else
-        npm $npm_flags install -g clawdbot-dingtalk >/dev/null 2>&1 || true
-    fi
-
-    spinner_stop 0 "钉钉插件已重新安装"
+    echo -e "${ERROR}✗${NC} 钉钉插件重新安装失败"
+    return 1
 }
 
 repair_clear_cache() {
@@ -4584,32 +4822,36 @@ run_repair_flow() {
         return 0
     fi
 
-    local repair_options=(
-        "运行诊断 (doctor)        - 自动检测并修复常见问题"
-        "修复 npm 权限            - 解决全局安装权限问题"
-        "重新安装 Openclaw        - 清理并重装核心"
-        "清理 npm 缓存            - 清除损坏的缓存"
-        "重置 Gateway             - 停止、重装、启动服务"
-        "返回主菜单"
-    )
+    while true; do
+        local repair_options=(
+            "运行诊断 (doctor)        - 自动检测并修复常见问题"
+            "修复 npm 权限            - 解决全局安装权限问题"
+            "重新安装 Openclaw        - 清理并重装核心"
+            "清理 npm 缓存            - 清除损坏的缓存"
+            "重置 Gateway             - 停止、重装、启动服务"
+            "返回主菜单"
+        )
 
-    echo ""
-    local repair_choice
-    repair_choice=$(clack_select "选择修复操作" "${repair_options[@]}")
+        echo ""
+        local repair_choice
+        repair_choice=$(clack_select "选择修复操作" "${repair_options[@]}")
 
-    echo ""
+        echo ""
 
-    case $repair_choice in
-        0) run_doctor_repair ;;
-        1) repair_npm_permissions ;;
-        2) repair_reinstall_clawdbot ;;
-        3) repair_clear_cache ;;
-        4) repair_reset_gateway ;;
-        5) return 0 ;;
-    esac
+        case $repair_choice in
+            0) run_doctor_repair ;;
+            1) repair_npm_permissions ;;
+            2) repair_reinstall_clawdbot ;;
+            3) repair_clear_cache ;;
+            4) repair_reset_gateway ;;
+            5) return 0 ;;
+        esac
 
-    echo ""
-    clack_outro "修复完成"
+        # 操作完成后暂停，让用户看到结果
+        echo ""
+        read -n 1 -s -r -p "$(echo -e "${MUTED}按任意键返回菜单...${NC}")" < /dev/tty
+        echo ""
+    done
 }
 
 # ============================================
@@ -4617,117 +4859,100 @@ run_repair_flow() {
 # ============================================
 
 show_channels_menu() {
-    echo ""
-    echo -e "${ACCENT}${BOLD}┌─────────────────────────────────────────┐${NC}"
-    echo -e "${ACCENT}${BOLD}│  📡 渠道插件管理                        │${NC}"
-    echo -e "${ACCENT}${BOLD}└─────────────────────────────────────────┘${NC}"
-    echo ""
-
-    # Show current channel status
+    # 预先获取版本信息（一次性，避免每次循环重复查询）
     local dingtalk_ver=""
     dingtalk_ver="$(get_channel_version dingtalk)"
-    local feishu_ver=""
-    feishu_ver="$(get_channel_version feishu)"
-    local wecom_ver=""
-    wecom_ver="$(get_channel_version wecom)"
 
-    echo -e "  ${MUTED}当前状态${NC}"
-    if [[ -n "$dingtalk_ver" ]]; then
-        echo -e "  ${MUTED}├─${NC} 钉钉: ${SUCCESS}v$dingtalk_ver${NC}"
-    else
-        echo -e "  ${MUTED}├─${NC} 钉钉: ${MUTED}未安装${NC}"
-    fi
-    if [[ -n "$feishu_ver" ]]; then
-        echo -e "  ${MUTED}├─${NC} 飞书: ${SUCCESS}v$feishu_ver${NC}"
-    else
-        echo -e "  ${MUTED}├─${NC} 飞书: ${MUTED}未安装${NC}"
-    fi
-    if [[ -n "$wecom_ver" ]]; then
-        echo -e "  ${MUTED}└─${NC} 企业微信: ${SUCCESS}v$wecom_ver${NC}"
-    else
-        echo -e "  ${MUTED}└─${NC} 企业微信: ${MUTED}未安装${NC}"
-    fi
-    echo ""
+    while true; do
+        echo ""
+        echo -e "${ACCENT}${BOLD}┌─────────────────────────────────────────┐${NC}"
+        echo -e "${ACCENT}${BOLD}│  📡 渠道管理                            │${NC}"
+        echo -e "${ACCENT}${BOLD}└─────────────────────────────────────────┘${NC}"
+        echo ""
 
-    local channel_menu_options=(
-        "查看状态 (List)       - 查看所有渠道插件状态"
-        "添加渠道 (Add)        - 安装并配置新渠道"
-        "升级插件 (Upgrade)    - 升级已安装的渠道插件"
-        "移除渠道 (Remove)     - 卸载渠道插件"
-        "返回主菜单"
-    )
+        # Show current channel status (使用已缓存的版本信息)
 
-    local channel_choice
-    channel_choice=$(clack_select "选择操作" "${channel_menu_options[@]}")
+        echo -e "  ${MUTED}当前状态${NC}"
+        if [[ -n "$dingtalk_ver" ]]; then
+            echo -e "  ${MUTED}└─${NC} 钉钉: ${SUCCESS}v$dingtalk_ver${NC}"
+        else
+            echo -e "  ${MUTED}└─${NC} 钉钉: ${MUTED}未安装${NC}"
+        fi
+        echo ""
 
-    echo ""
+        local channel_menu_options=(
+            "查看状态 (List)       - 查看所有渠道插件状态"
+            "添加渠道 (Add)        - 安装并配置新渠道"
+            "升级插件 (Upgrade)    - 升级已安装的渠道插件"
+            "移除渠道 (Remove)     - 卸载渠道插件"
+            "返回主菜单"
+        )
 
-    case $channel_choice in
-        0)
-            # List
-            list_channel_plugins
-            ;;
-        1)
-            # Add - show channel selection
-            local add_options=(
-                "钉钉 (DingTalk)   - ${CHANNEL_PKG_DINGTALK}"
-                "飞书 (Feishu)     - ${CHANNEL_PKG_FEISHU}"
-                "企业微信 (WeCom)  - ${CHANNEL_PKG_WECOM}"
-                "返回"
-            )
-            local add_choice
-            add_choice=$(clack_select "选择要添加的渠道" "${add_options[@]}")
-            case $add_choice in
-                0) CHANNEL_ACTION="add"; CHANNEL_TARGET="dingtalk"; run_channel_flow ;;
-                1) CHANNEL_ACTION="add"; CHANNEL_TARGET="feishu"; run_channel_flow ;;
-                2) CHANNEL_ACTION="add"; CHANNEL_TARGET="wecom"; run_channel_flow ;;
-                3) return 0 ;;
-            esac
-            ;;
-        2)
-            # Upgrade - show upgrade submenu
-            local upgrade_options=(
-                "升级所有插件"
-                "升级钉钉插件"
-                "升级飞书插件"
-                "升级企业微信插件"
-                "返回"
-            )
-            local upgrade_choice
-            upgrade_choice=$(clack_select "选择要升级的插件" "${upgrade_options[@]}")
-            case $upgrade_choice in
-                0) 
-                    upgrade_dingtalk_plugin || true
-                    upgrade_feishu_plugin || true
-                    upgrade_wecom_plugin || true
-                    ;;
-                1) upgrade_dingtalk_plugin ;;
-                2) upgrade_feishu_plugin ;;
-                3) upgrade_wecom_plugin ;;
-                4) return 0 ;;
-            esac
-            ;;
-        3)
-            # Remove - show channel selection
-            local remove_options=(
-                "钉钉 (DingTalk)"
-                "飞书 (Feishu)"
-                "企业微信 (WeCom)"
-                "返回"
-            )
-            local remove_choice
-            remove_choice=$(clack_select "选择要移除的渠道" "${remove_options[@]}")
-            case $remove_choice in
-                0) CHANNEL_ACTION="remove"; CHANNEL_TARGET="dingtalk"; run_channel_flow ;;
-                1) CHANNEL_ACTION="remove"; CHANNEL_TARGET="feishu"; run_channel_flow ;;
-                2) CHANNEL_ACTION="remove"; CHANNEL_TARGET="wecom"; run_channel_flow ;;
-                3) return 0 ;;
-            esac
-            ;;
-        4)
-            return 0
-            ;;
-    esac
+        local channel_choice
+        channel_choice=$(clack_select "选择操作" "${channel_menu_options[@]}")
+
+        echo ""
+
+        local should_pause=true
+
+        case $channel_choice in
+            0)
+                # List
+                list_channel_plugins
+                ;;
+            1)
+                # Add - show channel selection
+                local add_options=(
+                    "钉钉 (DingTalk)   - ${CHANNEL_PKG_DINGTALK}"
+                    "返回"
+                )
+                local add_choice
+                add_choice=$(clack_select "选择要添加的渠道" "${add_options[@]}")
+                case $add_choice in
+                    0) CHANNEL_ACTION="add"; CHANNEL_TARGET="dingtalk"; run_channel_flow ;;
+                    1) should_pause=false ;;
+                esac
+                ;;
+            2)
+                # Upgrade - show upgrade submenu
+                local upgrade_options=(
+                    "升级钉钉插件"
+                    "返回"
+                )
+                local upgrade_choice
+                upgrade_choice=$(clack_select "选择要升级的插件" "${upgrade_options[@]}")
+                case $upgrade_choice in
+                    0)
+                        upgrade_dingtalk_plugin || true
+                        ;;
+                    1) should_pause=false ;;
+                esac
+                ;;
+            3)
+                # Remove - show channel selection
+                local remove_options=(
+                    "钉钉 (DingTalk)"
+                    "返回"
+                )
+                local remove_choice
+                remove_choice=$(clack_select "选择要移除的渠道" "${remove_options[@]}")
+                case $remove_choice in
+                    0) CHANNEL_ACTION="remove"; CHANNEL_TARGET="dingtalk"; run_channel_flow ;;
+                    1) should_pause=false ;;
+                esac
+                ;;
+            4)
+                return 0
+                ;;
+        esac
+
+        # 操作完成后暂停，让用户看到结果（除非是子菜单返回）
+        if [[ "$should_pause" == true ]]; then
+            echo ""
+            read -n 1 -s -r -p "$(echo -e "${MUTED}按任意键返回菜单...${NC}")" < /dev/tty
+            echo ""
+        fi
+    done
 }
 
 run_channels_flow() {
@@ -4756,10 +4981,9 @@ show_main_menu() {
     echo ""
 
     local menu_options=(
-        "安装 Openclaw (Install)      - 安装或重新安装"
-        "升级 Openclaw (Upgrade)      - 升级到最新版本"
+        "安装/升级 Openclaw            - 安装或升级到最新版本"
+        "渠道管理 (Channels)          - 安装和管理渠道插件"
         "更新配置 (Configure)         - 运行配置向导"
-        "渠道插件 (Channels)          - 管理渠道插件"
         "查看状态 (Status)            - 显示安装状态"
         "修复问题 (Repair)            - 诊断和修复问题"
         "完全卸载 (Uninstall)         - 卸载 Openclaw"
@@ -4771,13 +4995,12 @@ show_main_menu() {
 
     case $menu_choice in
         0) ACTION="install" ;;
-        1) ACTION="upgrade" ;;
+        1) ACTION="channels" ;;
         2) ACTION="configure" ;;
-        3) ACTION="channels" ;;
-        4) ACTION="status" ;;
-        5) ACTION="repair" ;;
-        6) ACTION="uninstall" ;;
-        7)
+        3) ACTION="status" ;;
+        4) ACTION="repair" ;;
+        5) ACTION="uninstall" ;;
+        6)
             echo ""
             echo -e "${MUTED}再见！${NC}"
             exit 0
@@ -4799,7 +5022,7 @@ run_channel_flow() {
             ;;
         add)
             if [[ -z "$target" ]]; then
-                echo -e "${ERROR}请指定渠道: dingtalk|feishu|wecom${NC}"
+                echo -e "${ERROR}请指定渠道: dingtalk${NC}"
                 return 1
             fi
 
@@ -4810,17 +5033,19 @@ run_channel_flow() {
             # Configure the channel
             case "$target" in
                 dingtalk) configure_channel_dingtalk || return 1 ;;
-                feishu)   configure_channel_feishu || return 1 ;;
-                wecom)    configure_channel_wecom || return 1 ;;
                 *)
                     echo -e "${ERROR}未知渠道: $target${NC}"
-                    echo -e "支持的渠道: dingtalk, feishu, wecom"
+                    echo -e "支持的渠道: dingtalk"
                     return 1
                     ;;
             esac
 
+            # Clear npm cache before installing channel plugin
+            clear_npm_cache
+
             # Install the plugin
-            install_channel_plugin "$target" || return 1
+            # Delay gateway restart until after config is written (so it picks up new credentials/config).
+            install_channel_plugin "$target" "" "1" || return 1
 
             # Add config incrementally if config file exists
             if config_exists; then
@@ -4838,11 +5063,14 @@ run_channel_flow() {
                 echo ""
             fi
 
+            # Restart gateway at the very end so it picks up BOTH plugin + config changes.
+            restart_gateway_if_running
+
             clack_outro "${SUCCESS}渠道 $display_name 已添加${NC}"
             ;;
         remove)
             if [[ -z "$target" ]]; then
-                echo -e "${ERROR}请指定渠道: dingtalk|feishu|wecom${NC}"
+                echo -e "${ERROR}请指定渠道: dingtalk${NC}"
                 return 1
             fi
 
@@ -4857,7 +5085,7 @@ run_channel_flow() {
             fi
 
             remove_channel_plugin "$target"
-            
+
             # Remove config incrementally if config file exists
             if config_exists; then
                 config_remove_channel "$target"
@@ -4868,7 +5096,7 @@ run_channel_flow() {
             ;;
         configure)
             if [[ -z "$target" ]]; then
-                echo -e "${ERROR}请指定渠道: dingtalk|feishu|wecom${NC}"
+                echo -e "${ERROR}请指定渠道: dingtalk${NC}"
                 return 1
             fi
 
@@ -4879,8 +5107,6 @@ run_channel_flow() {
             # Configure the channel
             case "$target" in
                 dingtalk) configure_channel_dingtalk || return 1 ;;
-                feishu)   configure_channel_feishu || return 1 ;;
-                wecom)    configure_channel_wecom || return 1 ;;
                 *)
                     echo -e "${ERROR}未知渠道: $target${NC}"
                     return 1
@@ -4940,44 +5166,66 @@ main() {
         fi
     fi
 
-    # If menu action, show menu first
-    if [[ "$ACTION" == "menu" ]]; then
+    # Main menu loop - continue until user explicitly exits
+    while [[ "$ACTION" == "menu" ]]; do
         show_main_menu
-    fi
 
-    # Dispatch action
-    case "$ACTION" in
-        install)
-            run_install_flow
-            ;;
-        upgrade)
-            run_upgrade_flow
-            ;;
-        configure)
-            run_configure_flow
-            ;;
-        channels)
-            run_channels_flow
-            ;;
-        status)
-            run_status_flow
-            ;;
-        repair)
-            run_repair_flow
-            ;;
-        uninstall)
-            run_uninstall_flow
-            ;;
-        menu)
-            # After menu selection, dispatch again
-            main
-            ;;
-        *)
-            echo -e "${ERROR}未知操作: $ACTION${NC}"
-            print_usage
-            return 1
-            ;;
-    esac
+        # Dispatch action
+        case "$ACTION" in
+            install)
+                run_install_flow
+                ACTION="menu"  # Return to menu after completion
+                ;;
+            upgrade)
+                run_install_flow
+                ACTION="menu"
+                ;;
+            configure)
+                run_configure_flow
+                ACTION="menu"
+                ;;
+            channels)
+                run_channels_flow
+                ACTION="menu"
+                ;;
+            status)
+                run_status_flow
+                ACTION="menu"
+                ;;
+            repair)
+                run_repair_flow
+                ACTION="menu"
+                ;;
+            uninstall)
+                run_uninstall_flow
+                ACTION="menu"
+                ;;
+            menu)
+                # Already in menu mode, will loop back
+                ;;
+            *)
+                break  # Exit/unknown action, exit loop
+                ;;
+        esac
+    done
+
+    # Handle non-menu direct actions (e.g., ./installer.sh install)
+    if [[ "$ACTION" != "menu" && "$ACTION" != "exit" && -n "$ACTION" ]]; then
+        case "$ACTION" in
+            install) run_install_flow ;;
+            upgrade) run_install_flow ;;
+            configure) run_configure_flow ;;
+            channels) run_channels_flow ;;
+            status) run_status_flow ;;
+            repair) run_repair_flow ;;
+            uninstall) run_uninstall_flow ;;
+            *)
+                echo -e "${ERROR}未知操作: $ACTION${NC}"
+                print_usage
+                return 1
+                ;;
+        esac
+    fi
 }
 
 if [[ "${CLAWDBOT_INSTALL_SH_NO_RUN:-0}" != "1" ]]; then

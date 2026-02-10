@@ -32,14 +32,27 @@ command_exists() {
     command -v "$1" &>/dev/null
 }
 
+# 获取 clawdbot 路径
+get_clawdbot_bin() {
+    CLAWDBOT_INSTALL_SH_NO_RUN=1 source "$INSTALL_SCRIPT" 2>/dev/null && resolve_clawdbot_bin
+}
+
 # 获取已安装版本
 get_installed_version() {
-    clawdbot --version 2>/dev/null | head -n1 || echo ""
+    local claw
+    claw=$(get_clawdbot_bin)
+    if [[ -x "$claw" ]]; then
+        "$claw" --version 2>/dev/null | head -n1 || echo ""
+    else
+        echo ""
+    fi
 }
 
 # 检查 clawdbot 是否已安装
 is_clawdbot_installed() {
-    command_exists clawdbot
+    local claw
+    claw=$(get_clawdbot_bin)
+    [[ -x "$claw" ]]
 }
 
 # 加载凭据

@@ -2812,43 +2812,6 @@ configure_clawdbot_interactive() {
     # Create config directory
     mkdir -p "$config_dir"
 
-    # ========================================
-    # Channel Selection (Multi-select style)
-    # ========================================
-    echo ""
-    echo -e "${ACCENT}◆${NC} ${BOLD}选择要配置的渠道${NC}"
-    echo -e "${MUTED}  提示: 可以先跳过，稍后用 --channel-add 添加${NC}"
-    echo ""
-
-    local channel_options=(
-        "钉钉 (DingTalk)   - 需要 clientId + clientSecret"
-        "跳过渠道配置"
-    )
-
-    # Collect which channels to configure
-    local configure_dingtalk=0
-    local done_selecting=0
-
-    while [[ "$done_selecting" -eq 0 ]]; do
-        local channel_choice
-        channel_choice=$(clack_select "选择渠道 (已选: DT=${configure_dingtalk})" "${channel_options[@]}")
-
-        case $channel_choice in
-            0)
-                configure_dingtalk=1
-                echo -e "${SUCCESS}✓${NC} 已选择钉钉"
-                done_selecting=1
-                ;;
-            1)
-                done_selecting=1
-                ;;
-        esac
-    done
-
-    # Configure selected channels
-    if [[ "$configure_dingtalk" -eq 1 ]]; then
-        configure_channel_dingtalk || configure_dingtalk=0
-    fi
 
     # ========================================
     # DashScope / Model Configuration
@@ -2887,34 +2850,7 @@ configure_clawdbot_interactive() {
     escaped_dashscope_base_url="$(json_escape "$dashscope_base_url")"
     escaped_dashscope_api_key="$(json_escape "$dashscope_api_key")"
 
-    # ========================================
-    # Build channels config
-    # ========================================
-    local channels_config=""
-    local plugins_config=""
-    local has_any_channel=0
 
-    if [[ "$configure_dingtalk" -eq 1 && -n "${CHANNEL_DINGTALK_CLIENT_ID:-}" ]]; then
-        has_any_channel=1
-        channels_config+="$(generate_channel_config dingtalk)"
-        channels_config+=$'\n'
-        plugins_config+="$(generate_plugin_entry dingtalk)"
-    fi
-
-    # Build full channels block if any configured
-    local full_channels_block=""
-    if [[ "$has_any_channel" -eq 1 ]]; then
-        full_channels_block=$(cat <<EOF
-  "channels": {
-${channels_config}  },
-  "plugins": {
-    "entries": {
-${plugins_config}
-    }
-  },
-EOF
-)
-    fi
 
     # ========================================
     # Write configuration file
@@ -2922,7 +2858,6 @@ EOF
     echo -e "${WARN}→${NC} 写入配置文件..."
     cat > "$config_file" << CONFIGEOF
 {
-${full_channels_block}
   "gateway": {
     "mode": "local",
     "port": 18789,
@@ -2981,19 +2916,7 @@ CONFIGEOF
     log info "Configuration file generated: $config_file"
     log debug "Selected model: $SELECTED_MODEL"
 
-    # ========================================
-    # Install channel plugins
-    # ========================================
-    local claw="${CLAWDBOT_BIN:-}"
-    if [[ -z "$claw" ]]; then
-        claw="$(resolve_clawdbot_bin || true)"
-    fi
 
-    if [[ -n "$claw" ]]; then
-        if [[ "$configure_dingtalk" -eq 1 && -n "${CHANNEL_DINGTALK_CLIENT_ID:-}" ]]; then
-            install_channel_plugin dingtalk || true
-        fi
-    fi
 
     # ========================================
     # Summary
@@ -3007,15 +2930,7 @@ CONFIGEOF
     echo -e "  ${MUTED}├─${NC} 配置文件   ${INFO}$config_file${NC}"
     echo -e "  ${MUTED}├─${NC} 当前模型   ${INFO}$SELECTED_MODEL${NC}"
 
-    # Show configured channels
-    local channel_summary=""
-    [[ "$configure_dingtalk" -eq 1 && -n "${CHANNEL_DINGTALK_CLIENT_ID:-}" ]] && channel_summary+="钉钉 "
-
-    if [[ -n "$channel_summary" ]]; then
-        echo -e "  ${MUTED}└─${NC} 已配置渠道 ${SUCCESS}${channel_summary}${NC}"
-    else
-        echo -e "  ${MUTED}└─${NC} 已配置渠道 ${MUTED}无${NC}"
-    fi
+    echo -e "  ${MUTED}└─${NC} 渠道插件   ${MUTED}请通过「渠道管理」菜单安装${NC}"
 
     echo ""
     echo -e "  ${WARN}重要：请保存以下 Gateway Token${NC}"
@@ -3863,6 +3778,24 @@ stop_gateway_service() {
     fi
 }
 
+uninstall_gateway_service() {
+    local claw=""
+    claw="$(resolve_clawdbot_bin || true)"
+    if [[ -z "$claw" ]]; then
+        return 0
+    fi
+
+    spinner_start "卸载 Gateway 服务..."
+    if "$claw" gateway uninstall >/dev/null 2>&1; then
+        spinner_stop 0 "Gateway 服务已卸载"
+        return 0
+    fi
+
+    # 兼容旧版命令（部分版本使用 remove 子命令）
+    "$claw" gateway remove >/dev/null 2>&1 || true
+    spinner_stop 0 "Gateway 服务清理完成"
+}
+
 uninstall_clawdbot_components() {
     local claw=""
     claw="$(resolve_clawdbot_bin || true)"
@@ -3898,7 +3831,59 @@ uninstall_npm_packages() {
         rm -rf "${npm_root}/clawdbot" 2>/dev/null || true
         rm -rf "${npm_root}/clawdbot-dingtalk" 2>/dev/null || true
     fi
+    local npm_bin=""
+    npm_bin="$(npm_global_bin_dir 2>/dev/null || true)"
+    if [[ -n "$npm_bin" ]]; then
+        rm -f "${npm_bin}/openclaw" "${npm_bin}/clawdbot" 2>/dev/null || true
+    fi
     spinner_stop 0 "npm/pnpm 包已卸载"
+}
+
+has_openclaw_residuals() {
+    local npm_root=""
+    local npm_bin=""
+    npm_root="$(npm root -g 2>/dev/null || true)"
+    npm_bin="$(npm_global_bin_dir 2>/dev/null || true)"
+
+    if [[ -d "$HOME/.openclaw" ]]; then
+        return 0
+    fi
+    if [[ -d "$HOME/clawd" ]]; then
+        return 0
+    fi
+    if compgen -G "$HOME/clawd-*" >/dev/null; then
+        return 0
+    fi
+    if [[ -x "$HOME/.local/bin/openclaw" || -x "$HOME/.local/bin/clawdbot" ]]; then
+        return 0
+    fi
+
+    if [[ -f "$HOME/.config/systemd/user/openclaw-gateway.service" || -f "$HOME/.config/systemd/user/clawdbot-gateway.service" ]]; then
+        return 0
+    fi
+
+    if [[ -d "/tmp/openclaw" ]]; then
+        return 0
+    fi
+    if compgen -G "/tmp/openclaw-*" >/dev/null; then
+        return 0
+    fi
+    if compgen -G "/tmp/openclaw-plugin-*" >/dev/null; then
+        return 0
+    fi
+
+    if [[ -n "$npm_root" ]]; then
+        if [[ -d "${npm_root}/openclaw" || -d "${npm_root}/clawdbot" || -d "${npm_root}/clawdbot-dingtalk" ]]; then
+            return 0
+        fi
+    fi
+    if [[ -n "$npm_bin" ]]; then
+        if [[ -e "${npm_bin}/openclaw" || -e "${npm_bin}/clawdbot" ]]; then
+            return 0
+        fi
+    fi
+
+    return 1
 }
 
 cleanup_clawdbot_directories() {
@@ -3908,31 +3893,73 @@ cleanup_clawdbot_directories() {
     if [[ "$purge" == "1" ]]; then
         spinner_start "清理所有 Openclaw 数据..."
         rm -rf ~/.openclaw 2>/dev/null || true
-        rm -rf ~/clawd 2>/dev/null || true
+        rm -rf ~/clawd ~/clawd-* 2>/dev/null || true
         spinner_stop 0 "数据已清理"
-    elif [[ "$keep_config" != "1" ]]; then
-        spinner_start "清理工作区数据..."
-        rm -rf ~/clawd 2>/dev/null || true
-        spinner_stop 0 "工作区已清理"
+        return 0
+    fi
+
+    spinner_start "清理工作区数据..."
+    rm -rf ~/clawd ~/clawd-* 2>/dev/null || true
+    spinner_stop 0 "工作区已清理"
+
+    if [[ "$keep_config" != "1" ]]; then
+        spinner_start "清理配置文件..."
+        rm -rf ~/.openclaw 2>/dev/null || true
+        spinner_stop 0 "配置已清理"
+    else
+        echo -e "${WARN}→${NC} 已保留配置文件（--keep-config）"
     fi
 }
 
+cleanup_tmp_openclaw_artifacts() {
+    spinner_start "清理临时残留文件..."
+    rm -rf /tmp/openclaw /tmp/openclaw-* /tmp/openclaw-plugin-* 2>/dev/null || true
+    rm -f /tmp/jiti/*openclaw* /tmp/jiti/*clawdbot* 2>/dev/null || true
+    spinner_stop 0 "临时残留已清理"
+}
+
 cleanup_service_files() {
-    # Linux systemd
-    if [[ -f ~/.config/systemd/user/openclaw-gateway.service ]]; then
-        spinner_start "清理 systemd 服务文件..."
-        systemctl --user disable openclaw-gateway.service 2>/dev/null || true
-        rm -f ~/.config/systemd/user/openclaw-gateway.service 2>/dev/null || true
+    local systemd_cleaned="0"
+
+    if command -v systemctl &>/dev/null; then
+        systemctl --user stop openclaw-gateway.service clawdbot-gateway.service 2>/dev/null || true
+        systemctl --user disable openclaw-gateway.service clawdbot-gateway.service 2>/dev/null || true
+        systemctl stop openclaw-gateway.service clawdbot-gateway.service 2>/dev/null || true
+        systemctl disable openclaw-gateway.service clawdbot-gateway.service 2>/dev/null || true
+    fi
+
+    for svc in \
+        "$HOME/.config/systemd/user/openclaw-gateway.service" \
+        "$HOME/.config/systemd/user/clawdbot-gateway.service" \
+        "/etc/systemd/system/openclaw-gateway.service" \
+        "/etc/systemd/system/clawdbot-gateway.service"
+    do
+        if [[ -f "$svc" ]]; then
+            rm -f "$svc" 2>/dev/null || true
+            systemd_cleaned="1"
+        fi
+    done
+
+    if [[ "$systemd_cleaned" == "1" ]] && command -v systemctl &>/dev/null; then
         systemctl --user daemon-reload 2>/dev/null || true
-        spinner_stop 0 "systemd 服务已清理"
+        systemctl daemon-reload 2>/dev/null || true
+        echo -e "${SUCCESS}✓${NC} systemd 服务已清理"
     fi
 
     # macOS launchd
-    if [[ -f ~/Library/LaunchAgents/com.moltbot.gateway.plist ]]; then
-        spinner_start "清理 launchd 服务文件..."
-        launchctl unload ~/Library/LaunchAgents/com.moltbot.gateway.plist 2>/dev/null || true
-        rm -f ~/Library/LaunchAgents/com.moltbot.gateway.plist 2>/dev/null || true
-        spinner_stop 0 "launchd 服务已清理"
+    local launchd_cleaned="0"
+    for plist in \
+        "$HOME/Library/LaunchAgents/com.moltbot.gateway.plist" \
+        "$HOME/Library/LaunchAgents/com.openclaw.gateway.plist"
+    do
+        if [[ -f "$plist" ]]; then
+            launchctl unload "$plist" 2>/dev/null || true
+            rm -f "$plist" 2>/dev/null || true
+            launchd_cleaned="1"
+        fi
+    done
+    if [[ "$launchd_cleaned" == "1" ]]; then
+        echo -e "${SUCCESS}✓${NC} launchd 服务已清理"
     fi
 }
 
@@ -3944,21 +3971,32 @@ run_uninstall_flow() {
     # Check if openclaw is installed
     local clawdbot_installed=""
     clawdbot_installed="$(get_installed_version "openclaw")"
+    local has_residuals="0"
+    if has_openclaw_residuals; then
+        has_residuals="1"
+    fi
 
-    if [[ -z "$clawdbot_installed" ]]; then
+    if [[ -z "$clawdbot_installed" && "$has_residuals" != "1" ]]; then
         log info "Openclaw not installed, nothing to uninstall"
         clack_step "${WARN}Openclaw 未安装${NC}"
         clack_outro "无需卸载"
         return 0
     fi
 
-    log info "Current installed version: $clawdbot_installed"
-    clack_step "当前版本: ${INFO}$clawdbot_installed${NC}"
+    if [[ -n "$clawdbot_installed" ]]; then
+        log info "Current installed version: $clawdbot_installed"
+        clack_step "当前版本: ${INFO}$clawdbot_installed${NC}"
+    else
+        log info "Openclaw package not detected, cleaning residual files only"
+        clack_step "${WARN}未检测到已安装版本，继续清理残留${NC}"
+    fi
     echo ""
 
     # Confirm uninstall
     local confirm_msg="确定要卸载 Openclaw 吗？"
-    if [[ "$UNINSTALL_PURGE" == "1" ]]; then
+    if [[ -z "$clawdbot_installed" ]]; then
+        confirm_msg="未检测到已安装版本。是否继续清理 Openclaw 残留文件与服务？"
+    elif [[ "$UNINSTALL_PURGE" == "1" ]]; then
         confirm_msg="确定要完全卸载 Openclaw（包括所有配置和数据）吗？"
     fi
 
@@ -3977,6 +4015,10 @@ run_uninstall_flow() {
     log info "Stopping gateway service..."
     stop_gateway_service
 
+    # Uninstall gateway service
+    log info "Uninstalling gateway service..."
+    uninstall_gateway_service
+
     # Uninstall components
     log info "Uninstalling components..."
     uninstall_clawdbot_components
@@ -3988,6 +4030,10 @@ run_uninstall_flow() {
     # Cleanup directories
     log info "Cleaning up directories..."
     cleanup_clawdbot_directories "$UNINSTALL_PURGE" "$UNINSTALL_KEEP_CONFIG"
+
+    # Cleanup temporary artifacts
+    log info "Cleaning up temporary artifacts..."
+    cleanup_tmp_openclaw_artifacts
 
     # Cleanup service files
     log info "Cleaning up service files..."
@@ -4002,7 +4048,11 @@ run_uninstall_flow() {
 
     log info "=== Uninstall completed ==="
     echo ""
-    clack_outro "${SUCCESS}Openclaw 已完全卸载${NC}"
+    if [[ -n "$clawdbot_installed" ]]; then
+        clack_outro "${SUCCESS}Openclaw 已完全卸载${NC}"
+    else
+        clack_outro "${SUCCESS}Openclaw 残留已清理${NC}"
+    fi
 }
 
 # ============================================
@@ -4951,7 +5001,7 @@ show_channels_menu() {
     while true; do
         echo ""
         echo -e "${ACCENT}${BOLD}┌─────────────────────────────────────────┐${NC}"
-        echo -e "${ACCENT}${BOLD}│  📡 渠道插件管理                        │${NC}"
+        echo -e "${ACCENT}${BOLD}│  📡 渠道管理                            │${NC}"
         echo -e "${ACCENT}${BOLD}└─────────────────────────────────────────┘${NC}"
         echo ""
 
@@ -5066,10 +5116,9 @@ show_main_menu() {
     echo ""
 
     local menu_options=(
-        "安装 Openclaw (Install)      - 安装或重新安装"
-        "升级 Openclaw (Upgrade)      - 升级到最新版本"
+        "安装/升级 Openclaw            - 安装或升级到最新版本"
+        "渠道管理 (Channels)          - 安装和管理渠道插件"
         "更新配置 (Configure)         - 运行配置向导"
-        "渠道插件 (Channels)          - 管理渠道插件"
         "查看状态 (Status)            - 显示安装状态"
         "修复问题 (Repair)            - 诊断和修复问题"
         "完全卸载 (Uninstall)         - 卸载 Openclaw"
@@ -5081,13 +5130,12 @@ show_main_menu() {
 
     case $menu_choice in
         0) ACTION="install" ;;
-        1) ACTION="upgrade" ;;
+        1) ACTION="channels" ;;
         2) ACTION="configure" ;;
-        3) ACTION="channels" ;;
-        4) ACTION="status" ;;
-        5) ACTION="repair" ;;
-        6) ACTION="uninstall" ;;
-        7)
+        3) ACTION="status" ;;
+        4) ACTION="repair" ;;
+        5) ACTION="uninstall" ;;
+        6)
             echo ""
             echo -e "${MUTED}再见！${NC}"
             exit 0
@@ -5264,7 +5312,7 @@ main() {
                 ACTION="menu"  # Return to menu after completion
                 ;;
             upgrade)
-                run_upgrade_flow
+                run_install_flow
                 ACTION="menu"
                 ;;
             configure)
@@ -5300,7 +5348,7 @@ main() {
     if [[ "$ACTION" != "menu" && "$ACTION" != "exit" && -n "$ACTION" ]]; then
         case "$ACTION" in
             install) run_install_flow ;;
-            upgrade) run_upgrade_flow ;;
+            upgrade) run_install_flow ;;
             configure) run_configure_flow ;;
             channels) run_channels_flow ;;
             status) run_status_flow ;;
