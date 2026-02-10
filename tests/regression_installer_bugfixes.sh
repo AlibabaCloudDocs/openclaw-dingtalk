@@ -214,3 +214,23 @@ if [[ -n "$NPM_INSTALL_CAPTURED_SPEC" ]]; then
 fi
 
 pass "openclaw 2026.2.6* is skipped/blocked during install/upgrade"
+
+## ============================================================
+## Regression 4: core install is pinned to OPENCLAW_PINNED_VERSION
+## ============================================================
+
+# Even if the user tries to force --version/--beta, the installer should pin the
+# core to OPENCLAW_PINNED_VERSION for reproducibility.
+NPM_INSTALL_CAPTURED_SPEC=""
+install_clawdbot_npm() {
+  NPM_INSTALL_CAPTURED_SPEC="${1:-}"
+  return 0
+}
+CLAWDBOT_VERSION="latest"
+USE_BETA=1
+install_clawdbot >/dev/null 2>&1 || fail "install_clawdbot failed"
+if [[ "$NPM_INSTALL_CAPTURED_SPEC" != "openclaw@${OPENCLAW_PINNED_VERSION}" ]]; then
+  fail "expected pinned install spec openclaw@${OPENCLAW_PINNED_VERSION}, got: ${NPM_INSTALL_CAPTURED_SPEC:-<empty>}"
+fi
+
+pass "core install is pinned to ${OPENCLAW_PINNED_VERSION}"

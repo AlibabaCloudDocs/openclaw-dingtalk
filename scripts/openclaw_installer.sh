@@ -699,11 +699,15 @@ pick_tagline() {
 
 TAGLINE=$(pick_tagline)
 
+# Openclaw core version pinned by this installer.
+# This keeps installs reproducible and avoids surprises from upstream dist-tags.
+OPENCLAW_PINNED_VERSION="2026.2.3-1"
+
 NO_ONBOARD=${CLAWDBOT_NO_ONBOARD:-0}
 NO_PROMPT=${CLAWDBOT_NO_PROMPT:-0}
 DRY_RUN=${CLAWDBOT_DRY_RUN:-0}
 INSTALL_METHOD=${CLAWDBOT_INSTALL_METHOD:-}
-CLAWDBOT_VERSION=${CLAWDBOT_VERSION:-latest}
+CLAWDBOT_VERSION=${CLAWDBOT_VERSION:-$OPENCLAW_PINNED_VERSION}
 USE_BETA=${CLAWDBOT_BETA:-0}
 GIT_DIR_DEFAULT="${HOME}/openclaw"
 GIT_DIR=${CLAWDBOT_GIT_DIR:-$GIT_DIR_DEFAULT}
@@ -863,7 +867,7 @@ Usage:
 
 Actions:
   --install              Install Openclaw (default for pipe mode)
-  --upgrade              Upgrade Openclaw to latest version
+  --upgrade              Upgrade Openclaw (core pinned to ${OPENCLAW_PINNED_VERSION})
   --configure            Run configuration wizard
   --status               Show installation status
   --repair               Run repair/diagnostics menu
@@ -874,8 +878,8 @@ Install Options:
   --install-method, --method npm|git   Install via npm (default) or from a git checkout
   --npm                               Shortcut for --install-method npm
   --git, --github                     Shortcut for --install-method git
-  --version <version|dist-tag>         npm install: version (default: latest)
-  --beta                               Use beta if available, else latest
+  --version <version|dist-tag>         (ignored) Openclaw core is pinned to ${OPENCLAW_PINNED_VERSION}
+  --beta                               (ignored) Openclaw core is pinned to ${OPENCLAW_PINNED_VERSION}
   --git-dir, --dir <path>             Checkout directory (default: ~/openclaw)
   --no-git-update                      Skip git pull for existing checkout
 
@@ -916,8 +920,8 @@ Logging Options:
 Environment variables:
   CLAWDBOT_ACTION=install|upgrade|uninstall|configure|status|repair|menu
   CLAWDBOT_INSTALL_METHOD=git|npm
-  CLAWDBOT_VERSION=latest|next|<semver>
-  CLAWDBOT_BETA=0|1
+  CLAWDBOT_VERSION=<ignored> (Openclaw core is pinned to ${OPENCLAW_PINNED_VERSION})
+  CLAWDBOT_BETA=<ignored> (Openclaw core is pinned to ${OPENCLAW_PINNED_VERSION})
   CLAWDBOT_GIT_DIR=...
   CLAWDBOT_GIT_UPDATE=0|1
   CLAWDBOT_NO_PROMPT=1
@@ -2264,6 +2268,18 @@ resolve_beta_version() {
 install_clawdbot() {
     log info "Installing Openclaw via npm..."
     local package_name="${CLAWDBOT_NPM_PKG}"
+
+    # This installer pins the Openclaw core version. Ignore --version/--beta to
+    # keep installs reproducible and compatible with downstream plugins.
+    if [[ -n "${OPENCLAW_PINNED_VERSION:-}" ]]; then
+        if [[ "${USE_BETA}" == "1" || "${CLAWDBOT_VERSION}" != "${OPENCLAW_PINNED_VERSION}" ]]; then
+            echo -e "${WARN}→${NC} Openclaw 版本已固定为 ${INFO}${OPENCLAW_PINNED_VERSION}${NC}；忽略 --version/--beta。"
+            log info "Pinned Openclaw version: ${OPENCLAW_PINNED_VERSION}; ignoring version=${CLAWDBOT_VERSION}, beta=${USE_BETA}"
+        fi
+        USE_BETA=0
+        CLAWDBOT_VERSION="${OPENCLAW_PINNED_VERSION}"
+    fi
+
     if [[ "$USE_BETA" == "1" ]]; then
         local beta_version=""
         beta_version="$(resolve_beta_version || true)"
@@ -4033,43 +4049,22 @@ check_upgrade_available() {
 upgrade_clawdbot_core() {
     local current=""
     current="$(get_installed_version "openclaw")"
-    local latest=""
-    latest="$(get_latest_version "openclaw" "latest")"
+    local pinned="${OPENCLAW_PINNED_VERSION:-2026.2.3-1}"
 
     if [[ -z "$current" ]]; then
-        echo -e "${WARN}→${NC} Openclaw 未安装，执行安装..."
+        echo -e "${WARN}→${NC} Openclaw 未安装，执行安装 (固定版本: ${INFO}${pinned}${NC})..."
         install_clawdbot
         return $?
     fi
 
-    # If we can't get latest version from npm, skip comparison
-    if [[ -z "$latest" ]]; then
-        echo -e "${WARN}→${NC} 无法获取最新版本信息，尝试升级..."
-        spinner_start "升级 Openclaw..."
-        if install_clawdbot_npm "${CLAWDBOT_NPM_PKG}@latest" >/dev/null 2>&1; then
-            local new_version=""
-            new_version="$(get_installed_version "openclaw")"
-            spinner_stop 0 "Openclaw 已升级到 ${new_version:-latest}"
-            return 0
-        else
-            spinner_stop 1 "升级失败"
-            return 1
-        fi
-    fi
-
-    if [[ "$current" == "$latest" ]]; then
-        echo -e "${SUCCESS}✓${NC} Openclaw 已是最新版本 (${INFO}$current${NC})"
+    if [[ "$current" == "$pinned" ]]; then
+        echo -e "${SUCCESS}✓${NC} Openclaw 已是固定版本 (${INFO}$current${NC})"
         return 0
     fi
 
-    spinner_start "升级 Openclaw: $current → $latest"
-    if install_clawdbot_npm "${CLAWDBOT_NPM_PKG}@latest" >/dev/null 2>&1; then
-        spinner_stop 0 "Openclaw 已升级到 $latest"
-        return 0
-    else
-        spinner_stop 1 "升级失败"
-        return 1
-    fi
+    echo -e "${WARN}→${NC} Openclaw 当前版本 ${INFO}${current}${NC}，将切换到固定版本 ${INFO}${pinned}${NC}..."
+    install_clawdbot
+    return $?
 }
 
 upgrade_dingtalk_plugin() {
