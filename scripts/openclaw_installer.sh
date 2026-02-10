@@ -1560,59 +1560,6 @@ install_git() {
     echo -e "${SUCCESS}✓${NC} Git installed"
 }
 
-# Check cmake (required for node-llama-cpp native compilation)
-check_cmake() {
-    if command -v cmake &> /dev/null; then
-        echo -e "${SUCCESS}✓${NC} cmake already installed"
-        return 0
-    fi
-    echo -e "${WARN}→${NC} cmake not found"
-    return 1
-}
-
-# Install cmake (required for node-llama-cpp)
-install_cmake() {
-    log info "Installing cmake..."
-    spinner_start "Installing cmake (required for native modules)..."
-    local install_ok=0
-
-    if [[ "$OS" == "macos" ]]; then
-        if brew install cmake >/dev/null 2>&1; then
-            install_ok=1
-        fi
-    elif [[ "$OS" == "linux" ]]; then
-        require_sudo
-        if command -v apt-get &> /dev/null; then
-            apt_install update -y >/dev/null 2>&1
-            if apt_install install -y cmake build-essential >/dev/null 2>&1; then
-                install_ok=1
-            fi
-        elif command -v dnf &> /dev/null; then
-            if maybe_sudo dnf install -y cmake gcc-c++ make >/dev/null 2>&1; then
-                install_ok=1
-            fi
-        elif command -v yum &> /dev/null; then
-            if maybe_sudo yum install -y cmake gcc-c++ make >/dev/null 2>&1; then
-                install_ok=1
-            fi
-        elif command -v apk &> /dev/null; then
-            # Alpine Linux
-            if maybe_sudo apk add --no-cache cmake build-base >/dev/null 2>&1; then
-                install_ok=1
-            fi
-        fi
-    fi
-
-    if [[ "$install_ok" -eq 1 ]]; then
-        log info "cmake installed successfully"
-        spinner_stop 0 "cmake installed"
-        return 0
-    else
-        log warn "cmake installation failed"
-        spinner_stop 1 "cmake installation failed (node-llama-cpp may fail to build)"
-        return 1
-    fi
-}
 
 # Check Chromium
 check_chromium() {
@@ -2953,7 +2900,7 @@ CONFIGEOF
     echo ""
 
     # Auto-start gateway if any channel was configured
-    if [[ "$has_any_channel" -eq 1 && -n "$claw" ]]; then
+    if [[ "${has_any_channel:-0}" -eq 1 && -n "$claw" ]]; then
         echo -e "${WARN}→${NC} 安装并启动 Gateway 服务..."
         "$claw" gateway install || echo -e "${WARN}→${NC} 服务安装失败"
         "$claw" gateway start || echo -e "${WARN}→${NC} 启动失败，请手动执行: openclaw gateway start"
@@ -3081,15 +3028,10 @@ EOF
             install_git
         fi
 
-        # Step 4: cmake (required for node-llama-cpp native compilation)
-        if ! check_cmake; then
-            install_cmake || true
-        fi
-
-        # Step 5: npm permissions (Linux)
+        # Step 4: npm permissions (Linux)
         fix_npm_permissions
 
-        # Step 6: Openclaw
+        # Step 5: Openclaw
         install_clawdbot
     fi
 
