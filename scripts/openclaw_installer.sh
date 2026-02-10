@@ -510,6 +510,32 @@ cleanup_clawdbot_bin_conflict() {
 
 install_clawdbot_npm() {
     local spec="$1"
+
+    # ── Block known-bad openclaw versions ──────────────────────────
+    local _pkg_name=""
+    local _pkg_version=""
+    if [[ "$spec" == *"@"* ]]; then
+        _pkg_name="${spec%%@*}"
+        _pkg_version="${spec#*@}"
+    fi
+    if [[ "$_pkg_name" == "$CLAWDBOT_NPM_PKG" || "$_pkg_name" == "openclaw" ]]; then
+        # Dist-tags (latest/next/beta): resolve to a safe concrete version first.
+        if [[ "$_pkg_version" == "latest" || "$_pkg_version" == "next" || "$_pkg_version" == "beta" ]]; then
+            local _safe=""
+            _safe="$(resolve_safe_openclaw_version "$_pkg_version")"
+            if [[ -n "$_safe" ]]; then
+                log info "Resolved ${spec} → ${_pkg_name}@${_safe} (blocked-version filter)"
+                spec="${_pkg_name}@${_safe}"
+            fi
+        elif is_openclaw_version_blocked "$_pkg_version"; then
+            echo -e "${ERROR}版本 ${_pkg_version} 存在已知严重 Bug，已被阻止安装。${NC}" >&2
+            echo -e "${INFO}i${NC} 请使用其他版本，或等待修复版本发布。" >&2
+            log warn "Blocked installation of openclaw@${_pkg_version} (known critical bug)"
+            return 1
+        fi
+    fi
+    # ──────────────────────────────────────────────────────────────
+
     local log
     log="$(mktempfile)"
 
@@ -714,6 +740,87 @@ CN_HOMEBREW_INSTALL_SCRIPT="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/in
 
 # Openclaw core npm package name
 CLAWDBOT_NPM_PKG="openclaw"
+
+# ============================================
+# Blocked Openclaw Versions
+# ============================================
+# 2026.2.6 series (including -1, -2, -3 suffixes) has a critical bug.
+# The installer will refuse to install these and automatically select
+# the latest safe version instead.
+OPENCLAW_BLOCKED_VERSION_PATTERNS=("2026.2.6" "2026.2.6-*")
+
+# Check if a version string matches any blocked pattern.
+# Returns 0 (true) if blocked, 1 (false) if safe.
+is_openclaw_version_blocked() {
+    local version="$1"
+    if [[ -z "$version" ]]; then
+        return 1
+    fi
+    local pattern
+    for pattern in "${OPENCLAW_BLOCKED_VERSION_PATTERNS[@]}"; do
+        # shellcheck disable=SC2254
+        case "$version" in
+            $pattern) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# Resolve the latest safe (non-blocked) openclaw version for a given dist-tag.
+# If the tagged version is blocked, fetches all published versions and picks
+# the highest one that is not blocked.
+resolve_safe_openclaw_version() {
+    local tag="${1:-latest}"
+
+    # Fast path: tagged version is not blocked.
+    local candidate=""
+    candidate="$(npm view "${CLAWDBOT_NPM_PKG}@${tag}" version --prefer-online 2>/dev/null || true)"
+    if [[ -n "$candidate" ]] && ! is_openclaw_version_blocked "$candidate"; then
+        echo "$candidate"
+        return 0
+    fi
+
+    # Tagged version is blocked (or unavailable). Fetch the full version list
+    # and pick the highest safe one.
+    local all_versions=""
+    all_versions="$(npm view "${CLAWDBOT_NPM_PKG}" versions --json 2>/dev/null || true)"
+    if [[ -z "$all_versions" ]]; then
+        return 1
+    fi
+
+    local safe=""
+    safe="$(BLOCKED_PATTERNS="${OPENCLAW_BLOCKED_VERSION_PATTERNS[*]}" node -e '
+const fs = require("fs");
+const raw = fs.readFileSync(0, "utf8").trim();
+if (!raw) process.exit(1);
+let versions;
+try { versions = JSON.parse(raw); } catch { process.exit(1); }
+if (!Array.isArray(versions)) process.exit(1);
+
+const blocked = (process.env.BLOCKED_PATTERNS || "").split(" ").filter(Boolean);
+function isBlocked(v) {
+  return blocked.some(p => {
+    if (p.endsWith("*")) return v.startsWith(p.slice(0, -1));
+    return v === p;
+  });
+}
+
+// npm returns versions sorted by semver; pick the last non-blocked entry.
+for (let i = versions.length - 1; i >= 0; i--) {
+  if (!isBlocked(versions[i])) {
+    process.stdout.write(versions[i]);
+    process.exit(0);
+  }
+}
+process.exit(1);
+' <<< "$all_versions" 2>/dev/null || true)"
+
+    if [[ -n "$safe" ]]; then
+        echo "$safe"
+        return 0
+    fi
+    return 1
+}
 
 # Channel IDs (used in config keys)
 CHANNEL_DINGTALK="dingtalk"
@@ -3644,6 +3751,13 @@ get_latest_version() {
     # Map 'clawdbot' to actual npm package name 'openclaw'
     if [[ "$pkg" == "clawdbot" ]]; then
         pkg="$CLAWDBOT_NPM_PKG"
+    fi
+
+    # For openclaw core package, use the safe version resolver to skip blocked versions.
+    if [[ "$pkg" == "$CLAWDBOT_NPM_PKG" || "$pkg" == "openclaw" ]]; then
+        version="$(resolve_safe_openclaw_version "$tag")"
+        echo "$version"
+        return
     fi
 
     # 使用 --prefer-online 绕过本地缓存，确保获取最新版本信息

@@ -114,3 +114,103 @@ fi
 
 pass "gateway restarts only when running"
 
+## ============================================================
+## Regression 3: skip Openclaw 2026.2.6* (including -1/-2/-3)
+## ============================================================# Stub npm to avoid real network installs.
+NPM_INSTALL_CAPTURED_SPEC=""
+npm() {
+  local args=("$@")
+
+  # Find the npm subcommand (flags may appear before it).
+  local cmd=""
+  local cmd_idx=-1
+  local i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[$i]}" in
+      view|install|config|cache|list|root)
+        cmd="${args[$i]}"
+        cmd_idx=$i
+        break
+        ;;
+    esac
+  done
+
+  [[ -n "$cmd" ]] || return 0
+
+  case "$cmd" in
+    view)
+      # Examples:
+      # - npm view openclaw@latest version --prefer-online
+      # - npm view openclaw versions --json
+      local spec="${args[$((cmd_idx + 1))]:-}"
+      local field="${args[$((cmd_idx + 2))]:-}"
+      if [[ "$spec" == "openclaw@latest" && "$field" == "version" ]]; then
+        echo "2026.2.6-3"
+        return 0
+      fi
+      if [[ "$spec" == "openclaw@2026.2.5" && "$field" == "version" ]]; then
+        echo "2026.2.5"
+        return 0
+      fi
+      if [[ "$spec" == "openclaw@2026.2.6" && "$field" == "version" ]]; then
+        echo "2026.2.6"
+        return 0
+      fi
+      if [[ "$spec" == "openclaw" && "$field" == "versions" ]]; then
+        # Include blocked versions; resolver should pick 2026.2.5.
+        echo '["2026.2.4","2026.2.5","2026.2.6","2026.2.6-1","2026.2.6-3"]'
+        return 0
+      fi
+      return 0
+      ;;
+    config)
+      return 0
+      ;;
+    cache)
+      return 0
+      ;;
+    install)
+      # Capture the spec after -g/--global.
+      local j
+      for ((j = cmd_idx; j < ${#args[@]}; j++)); do
+        if [[ "${args[$j]}" == "-g" || "${args[$j]}" == "--global" ]]; then
+          NPM_INSTALL_CAPTURED_SPEC="${args[$((j + 1))]:-}"
+          break
+        fi
+      done
+      return 0
+      ;;
+    root)
+      # Minimal stub if invoked.
+      echo "${tmp_dir}/npm-root"
+      return 0
+      ;;
+    list)
+      return 0
+      ;;
+  esac
+}
+
+# get_latest_version(openclaw, latest) should filter out blocked 2026.2.6*
+latest_safe="$(get_latest_version "openclaw" "latest")"
+if [[ "$latest_safe" != "2026.2.5" ]]; then
+  fail "expected safe latest version 2026.2.5, got: ${latest_safe:-<empty>}"
+fi
+
+# install_clawdbot_npm(openclaw@latest) should NOT attempt to install 2026.2.6*.
+NPM_INSTALL_CAPTURED_SPEC=""
+install_clawdbot_npm "openclaw@latest" >/dev/null 2>&1 || fail "install_clawdbot_npm(openclaw@latest) failed"
+if [[ "$NPM_INSTALL_CAPTURED_SPEC" == "openclaw@latest" || "$NPM_INSTALL_CAPTURED_SPEC" == "openclaw@2026.2.6"* ]]; then
+  fail "expected npm to install safe version, got spec: ${NPM_INSTALL_CAPTURED_SPEC:-<empty>}"
+fi
+
+# Explicitly pinned blocked version should be rejected.
+NPM_INSTALL_CAPTURED_SPEC=""
+if install_clawdbot_npm "openclaw@2026.2.6" >/dev/null 2>&1; then
+  fail "expected install_clawdbot_npm(openclaw@2026.2.6) to fail, but it succeeded"
+fi
+if [[ -n "$NPM_INSTALL_CAPTURED_SPEC" ]]; then
+  fail "expected npm install not to run for blocked version, but got: $NPM_INSTALL_CAPTURED_SPEC"
+fi
+
+pass "openclaw 2026.2.6* is skipped/blocked during install/upgrade"
