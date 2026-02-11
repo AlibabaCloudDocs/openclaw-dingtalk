@@ -2820,7 +2820,9 @@ select_model_interactive() {
 
     echo ""
     local model_options=(
-        "qwen3-max-2026-01-23  - 高性能推理模型（推荐）"
+        "glm-4.7               - GLM 4.7 推理模型（推荐）"
+        "kimi-k2.5             - Kimi K2.5 推理模型"
+        "qwen3-max-2026-01-23  - 高性能推理模型"
         "qwen3-coder-plus      - 代码增强模型"
     )
 
@@ -2828,9 +2830,11 @@ select_model_interactive() {
     model_choice=$(clack_select "请选择 AI 模型" "${model_options[@]}")
 
     case $model_choice in
-        0) SELECTED_MODEL="dashscope/qwen3-max-2026-01-23" ;;
-        1) SELECTED_MODEL="dashscope/qwen3-coder-plus" ;;
-        *) SELECTED_MODEL="dashscope/qwen3-max-2026-01-23" ;;
+        0) SELECTED_MODEL="dashscope/glm-4.7" ;;
+        1) SELECTED_MODEL="dashscope/kimi-k2.5" ;;
+        2) SELECTED_MODEL="dashscope/qwen3-max-2026-01-23" ;;
+        3) SELECTED_MODEL="dashscope/qwen3-coder-plus" ;;
+        *) SELECTED_MODEL="dashscope/glm-4.7" ;;
     esac
 
     echo -e "${SUCCESS}◆${NC} 已选择模型: ${INFO}$SELECTED_MODEL${NC}"
@@ -3198,6 +3202,8 @@ configure_clawdbot_interactive() {
         "apiKey": "$escaped_dashscope_api_key",
         "api": "openai-completions",
         "models": [
+          { "id": "glm-4.7", "name": "GLM 4.7", "contextWindow": 200000, "maxTokens": 16384, "reasoning": true },
+          { "id": "kimi-k2.5", "name": "Kimi K2.5", "contextWindow": 200000, "maxTokens": 16384, "reasoning": true },
           { "id": "qwen3-max-2026-01-23", "name": "Qwen3 Max Thinking", "contextWindow": 262144, "maxTokens": 32768, "reasoning": true, "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false } },
           { "id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus", "contextWindow": 1000000, "maxTokens": 65536 }
         ]
@@ -5103,11 +5109,15 @@ config_update_model() {
     if [[ "$effective_base_url" == "$CODING_PLAN_URL" ]]; then
         # Coding Plan only supports these models
         local model_options=(
-            "dashscope/qwen3-max-2026-01-23  - Qwen3 Max Thinking（推荐）"
+            "dashscope/glm-4.7  - GLM 4.7（推荐）"
+            "dashscope/kimi-k2.5  - Kimi K2.5"
+            "dashscope/qwen3-max-2026-01-23  - Qwen3 Max Thinking"
             "dashscope/qwen3-coder-plus  - Qwen3 Coder Plus"
             "保留当前模型"
         )
         local model_ids=(
+            "dashscope/glm-4.7"
+            "dashscope/kimi-k2.5"
             "dashscope/qwen3-max-2026-01-23"
             "dashscope/qwen3-coder-plus"
         )
@@ -5115,7 +5125,7 @@ config_update_model() {
         local model_choice
         model_choice=$(clack_select "选择模型" "${model_options[@]}")
 
-        if [[ $model_choice -lt 2 ]]; then
+        if [[ $model_choice -lt 4 ]]; then
             new_model="${model_ids[$model_choice]}"
         fi
         # else: selected "保留当前模型", new_model stays empty
