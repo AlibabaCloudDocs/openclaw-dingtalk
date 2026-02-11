@@ -2432,6 +2432,62 @@ resolve_clawdbot_version() {
     echo "$version"
 }
 
+extract_gateway_status_json() {
+    local claw="$1"
+    if [[ -z "$claw" ]]; then
+        return 1
+    fi
+
+    local raw_output=""
+    raw_output="$("$claw" gateway status --json 2>/dev/null || true)"
+    if [[ -z "$raw_output" ]]; then
+        return 1
+    fi
+
+    # Some plugin implementations print log lines before JSON.
+    # Parse robustly and emit a compact JSON object for downstream checks.
+    printf '%s' "$raw_output" | node -e '
+const fs = require("fs");
+const raw = fs.readFileSync(0, "utf8");
+const trimmed = raw.trim();
+if (!trimmed) process.exit(1);
+
+const candidates = [];
+const seen = new Set();
+const add = (value) => {
+  const v = String(value || "").trim();
+  if (!v || seen.has(v)) return;
+  seen.add(v);
+  candidates.push(v);
+};
+
+add(trimmed);
+
+const lastJsonStart = trimmed.lastIndexOf("\n{");
+if (lastJsonStart >= 0) {
+  add(trimmed.slice(lastJsonStart + 1));
+}
+
+const firstBrace = trimmed.indexOf("{");
+const lastBrace = trimmed.lastIndexOf("}");
+if (firstBrace >= 0 && lastBrace > firstBrace) {
+  add(trimmed.slice(firstBrace, lastBrace + 1));
+}
+
+for (const candidate of candidates) {
+  try {
+    const parsed = JSON.parse(candidate);
+    process.stdout.write(JSON.stringify(parsed));
+    process.exit(0);
+  } catch {
+    // try next candidate
+  }
+}
+
+process.exit(1);
+' 2>/dev/null
+}
+
 is_gateway_daemon_loaded() {
     local claw="$1"
     if [[ -z "$claw" ]]; then
@@ -2439,7 +2495,7 @@ is_gateway_daemon_loaded() {
     fi
 
     local status_json=""
-    status_json="$("$claw" gateway status --json 2>/dev/null || true)"
+    status_json="$(extract_gateway_status_json "$claw" || true)"
     if [[ -z "$status_json" ]]; then
         return 1
     fi
@@ -2487,7 +2543,7 @@ is_gateway_running() {
     fi
 
     local status_json=""
-    status_json="$("$claw" gateway status --json 2>/dev/null || true)"
+    status_json="$(extract_gateway_status_json "$claw" || true)"
     if [[ -z "$status_json" ]]; then
         return 1
     fi
