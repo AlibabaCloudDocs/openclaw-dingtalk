@@ -2463,10 +2463,79 @@ try {
     return undefined;
   };
 
-  // Different Openclaw versions/OSes may emit different shapes. Try to infer "running" first,
-  // then fall back to "loaded" for backward compatibility.
   const svc = data?.service ?? data?.daemon ?? data?.gateway?.service ?? data?.gateway ?? {};
+  const runtime = svc?.runtime ?? data?.runtime ?? data?.service?.runtime ?? {};
+  const loaded = asBool(
+    svc?.loaded ??
+      svc?.isLoaded ??
+      runtime?.loaded ??
+      runtime?.isLoaded ??
+      data?.loaded ??
+      data?.serviceLoaded
+  );
+  process.exit(loaded ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+' >/dev/null 2>&1
+}
 
+is_gateway_running() {
+    local claw="$1"
+    if [[ -z "$claw" ]]; then
+        return 1
+    fi
+
+    local status_json=""
+    status_json="$("$claw" gateway status --json 2>/dev/null || true)"
+    if [[ -z "$status_json" ]]; then
+        return 1
+    fi
+
+    printf '%s' "$status_json" | node -e '
+const fs = require("fs");
+const raw = fs.readFileSync(0, "utf8").trim();
+if (!raw) process.exit(1);
+try {
+  const data = JSON.parse(raw);
+  const asBool = (v) => {
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0;
+    if (typeof v === "string") {
+      const s = v.trim().toLowerCase();
+      if (["true", "yes", "y", "1", "running", "active", "started", "up", "ok", "healthy", "online"].includes(s)) return true;
+      if (["false", "no", "n", "0", "stopped", "inactive", "down", "failed", "error", "offline", "dead", "unknown"].includes(s)) return false;
+      if (s === "loaded") return true;
+      if (s === "unloaded") return false;
+    }
+    return undefined;
+  };
+  const asRunningState = (v) => {
+    const direct = asBool(v);
+    if (direct !== undefined) return direct;
+    if (typeof v !== "string") return undefined;
+    const s = v.trim().toLowerCase();
+    if (!s) return undefined;
+    if (s.includes("running") || s.includes("started") || s.includes("active")) return true;
+    if (s.includes("stopped") || s.includes("inactive") || s.includes("failed") || s.includes("dead")) return false;
+    return undefined;
+  };
+
+  const svc = data?.service ?? data?.daemon ?? data?.gateway?.service ?? data?.gateway ?? {};
+  const runtime = svc?.runtime ?? data?.runtime ?? data?.service?.runtime ?? {};
+
+  // Prefer explicit runtime state (newer Openclaw daemon status schema).
+  const runtimeRunning = asRunningState(
+    runtime?.running ??
+      runtime?.active ??
+      runtime?.isRunning ??
+      runtime?.status ??
+      runtime?.state ??
+      runtime?.subState
+  );
+  if (runtimeRunning !== undefined) process.exit(runtimeRunning ? 0 : 1);
+
+  // Backward-compatible running fields.
   const running = asBool(
     svc?.running ??
       svc?.active ??
@@ -2481,9 +2550,31 @@ try {
   );
   if (running !== undefined) process.exit(running ? 0 : 1);
 
-  const pid = svc?.pid ?? data?.pid ?? data?.service?.pid;
-  if (typeof pid === "number" && pid > 0) process.exit(0);
+  const pid = runtime?.pid ?? svc?.pid ?? data?.pid ?? data?.service?.pid;
+  if ((typeof pid === "number" && pid > 0) || (typeof pid === "string" && /^[0-9]+$/.test(pid) && Number(pid) > 0)) {
+    process.exit(0);
+  }
 
+  // daemon-cli status schema: rpc.ok says if local probe can talk to gateway.
+  const rpcOk = asBool(data?.rpc?.ok ?? data?.connect?.ok ?? data?.probe?.ok);
+  if (rpcOk !== undefined) process.exit(rpcOk ? 0 : 1);
+
+  // gateway probe schema: targets[].connect.ok and top-level ok.
+  if (Array.isArray(data?.targets)) {
+    const targetStates = data.targets
+      .map((t) => asBool(t?.connect?.ok ?? t?.probe?.ok ?? t?.ok))
+      .filter((v) => v !== undefined);
+    if (targetStates.length > 0) process.exit(targetStates.some(Boolean) ? 0 : 1);
+  }
+  const probeOk = asBool(data?.ok);
+  if (probeOk !== undefined) process.exit(probeOk ? 0 : 1);
+
+  // Port listener info from daemon-cli status.
+  const portStatus = String(data?.port?.status ?? "").trim().toLowerCase();
+  if (["busy", "listening", "open", "in_use", "in-use"].includes(portStatus)) process.exit(0);
+  if (["free", "closed"].includes(portStatus)) process.exit(1);
+
+  // Last fallback: service loaded (older behavior).
   const loaded = asBool(svc?.loaded ?? svc?.isLoaded ?? data?.loaded ?? data?.serviceLoaded);
   process.exit(loaded ? 0 : 1);
 } catch {
@@ -3842,7 +3933,7 @@ run_status_flow() {
     local claw=""
     claw="$(resolve_clawdbot_bin || true)"
     if [[ -n "$claw" ]]; then
-        if is_gateway_daemon_loaded "$claw"; then
+        if is_gateway_running "$claw"; then
             echo -e "  ${MUTED}└─${NC} Gateway      ${SUCCESS}✓${NC} 运行中"
         else
             echo -e "  ${MUTED}└─${NC} Gateway      ${MUTED}○${NC} 未运行"
