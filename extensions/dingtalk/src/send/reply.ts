@@ -48,20 +48,20 @@ function maskWebhook(url: string): string {
 
 async function readDingTalkWebhookResult(
   resp: unknown
-): Promise<{ rawText: string; data: DingTalkWebhookResult | undefined }> {
+): Promise<{ rawText: string; data: DingTalkWebhookResult | undefined; recognized: boolean }> {
   const anyResp = resp as Record<string, any>;
 
   // Prefer resp.text() when available because it works for both JSON and plain text.
   if (typeof anyResp?.text === "function") {
     const rawText = await anyResp.text();
     if (!rawText?.trim()) {
-      return { rawText: "", data: undefined };
+      return { rawText: "", data: undefined, recognized: false };
     }
     try {
       const parsed = JSON.parse(rawText) as DingTalkWebhookResult;
-      return { rawText, data: parsed };
+      return { rawText, data: parsed, recognized: true };
     } catch {
-      return { rawText, data: undefined };
+      return { rawText, data: undefined, recognized: false };
     }
   }
 
@@ -69,16 +69,20 @@ async function readDingTalkWebhookResult(
   if (typeof anyResp?.json === "function") {
     try {
       const parsed = (await anyResp.json()) as DingTalkWebhookResult;
-      return { rawText: JSON.stringify(parsed ?? {}), data: parsed };
+      return { rawText: JSON.stringify(parsed ?? {}), data: parsed, recognized: true };
     } catch {
-      return { rawText: "", data: undefined };
+      return { rawText: "", data: undefined, recognized: false };
     }
   }
 
-  return { rawText: "", data: undefined };
+  return { rawText: "", data: undefined, recognized: false };
 }
 
-function isDingTalkWebhookOk(data: DingTalkWebhookResult | undefined): boolean {
+function isDingTalkWebhookOk(
+  data: DingTalkWebhookResult | undefined,
+  recognized: boolean
+): boolean {
+  if (!recognized) return false;
   if (!data) return true;
   if (data.errcode === undefined) return true;
   return data.errcode === 0;
@@ -148,11 +152,12 @@ export async function sendReplyViaSessionWebhook(
         return { ok: false, reason: "http_error", status: resp.status, data: parsed.rawText || parsed.data };
       }
 
-      if (!isDingTalkWebhookOk(parsed.data)) {
+      if (!isDingTalkWebhookOk(parsed.data, parsed.recognized)) {
         logger?.error?.(
           {
             errcode: parsed.data?.errcode,
             errmsg: parsed.data?.errmsg,
+            response: parsed.rawText?.slice(0, 300),
             webhook: maskWebhook(sessionWebhook),
           },
           "DingTalk API returned error for text reply"
@@ -215,9 +220,14 @@ export async function sendImageViaSessionWebhook(
       return { ok: false, reason: "http_error", status: resp.status, data: parsed.rawText || parsed.data };
     }
 
-    if (!isDingTalkWebhookOk(parsed.data)) {
+    if (!isDingTalkWebhookOk(parsed.data, parsed.recognized)) {
       logger?.error?.(
-        { errcode: parsed.data?.errcode, errmsg: parsed.data?.errmsg, webhook: maskWebhook(sessionWebhook) },
+        {
+          errcode: parsed.data?.errcode,
+          errmsg: parsed.data?.errmsg,
+          response: parsed.rawText?.slice(0, 300),
+          webhook: maskWebhook(sessionWebhook),
+        },
         "DingTalk API returned error for image send"
       );
       return { ok: false, reason: "api_error", status: resp.status, data: parsed.data ?? parsed.rawText };
@@ -284,9 +294,15 @@ export async function sendImageWithMediaIdViaSessionWebhook(
     }
 
     // Check DingTalk API-level error (HTTP 200 but errcode != 0)
-    if (!isDingTalkWebhookOk(parsed.data)) {
+    if (!isDingTalkWebhookOk(parsed.data, parsed.recognized)) {
       logger?.error?.(
-        { errcode: parsed.data?.errcode, errmsg: parsed.data?.errmsg, webhook: maskWebhook(sessionWebhook), mediaId },
+        {
+          errcode: parsed.data?.errcode,
+          errmsg: parsed.data?.errmsg,
+          response: parsed.rawText?.slice(0, 300),
+          webhook: maskWebhook(sessionWebhook),
+          mediaId,
+        },
         "DingTalk API returned error for image send"
       );
       return { ok: false, reason: "api_error", status: resp.status, data: parsed.data ?? parsed.rawText };
@@ -374,9 +390,14 @@ export async function sendActionCardViaSessionWebhook(
       return { ok: false, reason: "http_error", status: resp.status, data: parsed.rawText || parsed.data };
     }
 
-    if (!isDingTalkWebhookOk(parsed.data)) {
+    if (!isDingTalkWebhookOk(parsed.data, parsed.recognized)) {
       logger?.error?.(
-        { errcode: parsed.data?.errcode, errmsg: parsed.data?.errmsg, webhook: maskWebhook(sessionWebhook) },
+        {
+          errcode: parsed.data?.errcode,
+          errmsg: parsed.data?.errmsg,
+          response: parsed.rawText?.slice(0, 300),
+          webhook: maskWebhook(sessionWebhook),
+        },
         "DingTalk API returned error for ActionCard send"
       );
       return { ok: false, reason: "api_error", status: resp.status, data: parsed.data ?? parsed.rawText };

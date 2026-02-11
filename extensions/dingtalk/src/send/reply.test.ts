@@ -132,6 +132,24 @@ describe("sendReplyViaSessionWebhook", () => {
     expect(result.status).toBe(200);
   });
 
+  it("returns api_error when HTTP 200 has unrecognized/empty response body", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: () => Promise.resolve(""),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await sendReplyViaSessionWebhook(
+      "https://oapi.dingtalk.com/robot/sendBySession?session=xxx",
+      "Hello"
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("api_error");
+    expect(result.status).toBe(200);
+  });
+
   it("returns error on fetch exception", async () => {
     const mockFetch = vi.fn().mockRejectedValue(new Error("Network error"));
     vi.stubGlobal("fetch", mockFetch);

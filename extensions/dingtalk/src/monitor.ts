@@ -140,15 +140,22 @@ function injectChinesePromptForBareNewCommand(text: string): string {
 const REASONING_HEADER_RE = /^Reasoning:\s*/i;
 const TOOL_PRELUDE_MAX_CHARS = 280;
 const TOOL_PRELUDE_MAX_LINES = 4;
-const TOOL_PRELUDE_ZH_PREFIX_RE = /(让我|我先|我来|先让我|先帮你|我先帮你|先去|正在)/;
+const TOOL_PRELUDE_LOOSE_MAX_CHARS = 220;
+const TOOL_PRELUDE_LOOSE_MAX_LINES = 3;
+const TOOL_PRELUDE_ZH_PREFIX_RE =
+  /(让我|我先|我来|先让我|先帮你|我先帮你|先去|正在|我可以(?:先)?为你|我来(?:为你|帮你)|我理解(?:你|你的)?(?:希望|想|要))/;
 const TOOL_PRELUDE_ZH_ACTION_RE =
-  /(搜索|检索|查询|查找|查看|检查|核实|读取|抓取|获取|调用|执行|运行|分析|浏览|收集|web_search|aliyun_|code_interpreter|tool)/i;
+  /(搜索|检索|查询|查找|查看|检查|核实|读取|抓取|获取|调用|执行|运行|分析|浏览|收集|设置|创建|安排|配置|生成(?:一个)?(?:方案|计划)?|订阅|web_search|aliyun_|code_interpreter|tool)/i;
+const TOOL_PRELUDE_ZH_INTENT_RE =
+  /(?:我理解[^。！？\n]{0,80}(?:你(?:希望|想|要)|你的需求)|我(?:可以|会|将)?(?:为你|帮你)(?:设置|创建|安排|配置|搜索|检索|查询|查找|查看|检查|核实|获取|调用|执行|运行|生成(?:一个)?(?:方案|计划)?)|我来(?:为你|帮你)(?:设置|创建|安排|配置|搜索|检查|获取|调用|生成(?:一个)?(?:方案|计划)?)|让我(?:来|先)(?:为你|帮你)?(?:设置|创建|安排|配置|搜索|检查|获取|调用|生成(?:一个)?(?:方案|计划)?))/;
 const TOOL_PRELUDE_EN_PREFIX_RE =
   /\b(let me|i(?:'|\u2019)ll|i will|first,?\s*i(?:'|\u2019)ll|i'm going to)\b/i;
 const TOOL_PRELUDE_EN_ACTION_RE =
-  /\b(search|look up|check|verify|fetch|retrieve|inspect|call|run|use|query|browse|scan)\b/i;
-const SYNTHETIC_FINAL_SUMMARY_START_RE =
-  /(?:现在|接下来)?(?:让我|我来)(?:为你|帮你)?(?:整理|汇总)|(?:最终|完整)?(?:结果|总结)(?:如下|如下所示)?|^(?:##|###)\s|^\d+\.\s/m;
+  /\b(search|look up|check|verify|fetch|retrieve|inspect|call|run|use|query|browse|scan|set up|create|schedule|configure)\b/i;
+const SYNTHETIC_FINAL_STRONG_SUMMARY_START_RE =
+  /(?:最终(?:汇总|总结|答案|结论)(?:如下|如下所示)?|(?:现在|接下来)?(?:让我|我来)(?:为你|帮你)?(?:做个|给出|提供)?(?:最终)?(?:汇总|总结)(?:如下|如下所示)?|(?:下面|以下)是(?:最终)?(?:汇总|总结|答案|结论)|\b(?:summary|final answer|in summary|to summarize)\b)/i;
+const SYNTHETIC_FINAL_TAIL_MIN_CHARS = 60;
+const SYNTHETIC_FINAL_TAIL_MIN_RATIO = 0.45;
 
 function isReasoningPayload(text: string): boolean {
   const trimmed = text.trimStart();
@@ -195,7 +202,8 @@ function isLikelyToolPreludeText(raw?: string): boolean {
   }
   const zhLikely =
     (TOOL_PRELUDE_ZH_PREFIX_RE.test(trimmed) && TOOL_PRELUDE_ZH_ACTION_RE.test(trimmed)) ||
-    /(?:正在|先)(?:为你|帮你)?(?:搜索|查询|检查|调用|获取)/.test(trimmed);
+    TOOL_PRELUDE_ZH_INTENT_RE.test(trimmed) ||
+    /(?:正在|先)(?:为你|帮你)?(?:搜索|查询|检查|调用|获取|设置|创建|安排|配置)/.test(trimmed);
   if (zhLikely) {
     return true;
   }
@@ -205,6 +213,34 @@ function isLikelyToolPreludeText(raw?: string): boolean {
   }
   // Fallback: concise tool-status style text that explicitly names tool execution.
   return /\b(web_search|code_interpreter|aliyun_|mcp|tool)\b/i.test(trimmed) && trimmed.length <= 140;
+}
+
+function isLikelyFirstBlockLooseToolPrelude(raw?: string): boolean {
+  const normalized = normalizeSilentFallbackText(raw);
+  if (!normalized) {
+    return false;
+  }
+  const trimmed = normalized.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (
+    trimmed.length > TOOL_PRELUDE_LOOSE_MAX_CHARS ||
+    trimmed.split("\n").length > TOOL_PRELUDE_LOOSE_MAX_LINES
+  ) {
+    return false;
+  }
+  if (/[\n]{2,}|^[#>*-]/m.test(trimmed) || /^\d+[.)]\s/m.test(trimmed)) {
+    return false;
+  }
+  if (/\bhttps?:\/\/\S+/i.test(trimmed)) {
+    return false;
+  }
+  const zhLoose = TOOL_PRELUDE_ZH_INTENT_RE.test(trimmed);
+  if (zhLoose) {
+    return true;
+  }
+  return /\b(?:i can|i(?:'|\u2019)ll|let me)\b/i.test(trimmed) && TOOL_PRELUDE_EN_ACTION_RE.test(trimmed);
 }
 
 function trimLeadingPreludeText(rawText: string, rawPrelude: string): string | undefined {
@@ -246,10 +282,32 @@ function isLikelySyntheticFinalSummaryStart(raw?: string): boolean {
   if (!trimmed) {
     return false;
   }
-  if (SYNTHETIC_FINAL_SUMMARY_START_RE.test(trimmed)) {
+  if (SYNTHETIC_FINAL_STRONG_SUMMARY_START_RE.test(trimmed)) {
     return true;
   }
-  return /\b(?:summary|final answer|here(?:'|’)s what i found)\b/i.test(trimmed);
+  return false;
+}
+
+function shouldUseSyntheticSummaryTail(fullText: string, summaryTail: string): {
+  useTail: boolean;
+  fullLength: number;
+  summaryLength: number;
+  ratio: number;
+  reason: string;
+} {
+  const fullLength = fullText.trim().length;
+  const summaryLength = summaryTail.trim().length;
+  const ratio = fullLength > 0 ? summaryLength / fullLength : 0;
+  if (!summaryLength) {
+    return { useTail: false, fullLength, summaryLength, ratio, reason: "empty_tail" };
+  }
+  if (summaryLength < SYNTHETIC_FINAL_TAIL_MIN_CHARS) {
+    return { useTail: false, fullLength, summaryLength, ratio, reason: "tail_too_short" };
+  }
+  if (fullLength >= 260 && ratio < SYNTHETIC_FINAL_TAIL_MIN_RATIO) {
+    return { useTail: false, fullLength, summaryLength, ratio, reason: "tail_ratio_too_small" };
+  }
+  return { useTail: true, fullLength, summaryLength, ratio, reason: "strong_marker_tail" };
 }
 
 function hasAllowedCommandToken(text?: string): boolean {
@@ -427,11 +485,20 @@ function normalizeSilentFallbackText(raw?: string): string | undefined {
   if (!stripped.trim()) {
     return undefined;
   }
-  const trimmed = stripped.trim();
+  let cleaned = stripped;
+  if (hasMediaTags(cleaned) || /\[DING:/i.test(cleaned)) {
+    cleaned = parseMediaProtocol(cleaned).cleanedContent;
+    // Fallback safety: drop any malformed/unparsed DING tags so raw protocol never leaks to users.
+    cleaned = cleaned.replace(/\[DING:[^\]]+\]/gi, "");
+  }
+  if (!cleaned.trim()) {
+    return undefined;
+  }
+  const trimmed = cleaned.trim();
   if (/^(?:\.{1,2}\/|\/|~\/|file:\/\/|MEDIA:|attachment:\/\/)/i.test(trimmed)) {
     return undefined;
   }
-  return stripped;
+  return cleaned;
 }
 
 async function resolveSessionTranscriptPathBySessionKey(
@@ -1373,11 +1440,13 @@ export async function monitorDingTalkProvider(
     const runDeliveryState = {
       deliveredCount: 0,
       finalDelivered: false,
+      mediaDelivered: false,
       lastTextCandidate: undefined as string | undefined,
       fallbackSent: false,
     };
     const blockTextBufferState = {
       sawBlockText: false,
+      blockTextCount: 0,
       accumulatedText: "",
       synthesizedSummaryText: "",
       summaryStarted: false,
@@ -1405,6 +1474,7 @@ export async function monitorDingTalkProvider(
         return;
       }
       blockTextBufferState.sawBlockText = true;
+      blockTextBufferState.blockTextCount += 1;
       blockTextBufferState.accumulatedText = mergeBufferedBlockText(
         blockTextBufferState.accumulatedText,
         normalized
@@ -1413,6 +1483,14 @@ export async function monitorDingTalkProvider(
       if (!blockTextBufferState.summaryStarted && isSummaryStart) {
         blockTextBufferState.summaryStarted = true;
         blockTextBufferState.synthesizedSummaryText = normalized;
+        log?.debug?.(
+          {
+            sessionKey,
+            blockTextCount: blockTextBufferState.blockTextCount,
+            textSample: normalized.slice(0, 120),
+          },
+          "Detected strong synthetic-final summary marker from block text"
+        );
         return;
       }
       if (blockTextBufferState.summaryStarted) {
@@ -1453,10 +1531,26 @@ export async function monitorDingTalkProvider(
       if (blockTextBufferState.toolPreludeDelivered) {
         return undefined;
       }
-      if (!isLikelyToolPreludeText(text)) {
+      const strictMatched = isLikelyToolPreludeText(text);
+      const looseFirstBlockMatched =
+        !strictMatched &&
+        blockTextBufferState.blockTextCount === 1 &&
+        isLikelyFirstBlockLooseToolPrelude(text);
+      if (!strictMatched && !looseFirstBlockMatched) {
         return undefined;
       }
-      return takeToolPreludeCandidate();
+      const taken = takeToolPreludeCandidate();
+      if (taken) {
+        log?.debug?.(
+          {
+            sessionKey,
+            path: strictMatched ? "strict_match" : "loose_first_block",
+            textSample: taken.slice(0, 120),
+          },
+          "Tool prelude candidate selected from block"
+        );
+      }
+      return taken;
     };
     const trimDeliveredPreludeFromReply = (text?: string): string | undefined => {
       if (!text?.trim()) {
@@ -1497,9 +1591,40 @@ export async function monitorDingTalkProvider(
         return;
       }
 
-      const synthesizedSource = blockTextBufferState.summaryStarted
-        ? blockTextBufferState.synthesizedSummaryText
-        : blockTextBufferState.accumulatedText;
+      const fullSource = blockTextBufferState.accumulatedText;
+      const summaryTailSource = blockTextBufferState.synthesizedSummaryText;
+      let synthesizedSource = fullSource;
+      let syntheticSourceMode: "full" | "summary-tail" = "full";
+      let syntheticSourceDecision = "default_full";
+      if (blockTextBufferState.summaryStarted && summaryTailSource.trim()) {
+        const decision = shouldUseSyntheticSummaryTail(fullSource, summaryTailSource);
+        if (decision.useTail) {
+          synthesizedSource = summaryTailSource;
+          syntheticSourceMode = "summary-tail";
+        }
+        syntheticSourceDecision = decision.reason;
+        log?.debug?.(
+          {
+            sessionKey,
+            source: decision.useTail ? "summary-tail" : "full",
+            reason: decision.reason,
+            fullLength: decision.fullLength,
+            summaryLength: decision.summaryLength,
+            ratio: Number(decision.ratio.toFixed(3)),
+          },
+          "Synthetic final source decision"
+        );
+      } else {
+        log?.debug?.(
+          {
+            sessionKey,
+            source: "full",
+            reason: blockTextBufferState.summaryStarted ? "empty_summary_tail" : "no_strong_summary_marker",
+            fullLength: fullSource.trim().length,
+          },
+          "Synthetic final source decision"
+        );
+      }
       const text = synthesizedSource.trim()
         ? trimDeliveredPreludeFromReply(synthesizedSource)
         : undefined;
@@ -1524,6 +1649,8 @@ export async function monitorDingTalkProvider(
       log?.warn?.(
         {
           sessionKey,
+          syntheticSourceMode,
+          syntheticSourceDecision,
           counts: hasCounts
             ? {
                 block: countsRaw?.block,
@@ -1559,8 +1686,8 @@ export async function monitorDingTalkProvider(
     };
     const maybeSendSilentRunFallback = async (): Promise<void> => {
       // Follow Telegram-style delivery semantics:
-      // only skip fallback when a real final has been delivered.
-      if (runDeliveryState.fallbackSent || runDeliveryState.finalDelivered) {
+      // skip fallback when a real final or media delivery already happened.
+      if (runDeliveryState.fallbackSent || runDeliveryState.finalDelivered || runDeliveryState.mediaDelivered) {
         return;
       }
       if (!chat.sessionWebhook?.trim()) {
@@ -1777,12 +1904,26 @@ export async function monitorDingTalkProvider(
 
         const toolPreludeText =
           info.kind === "tool"
-            ? takeToolPreludeCandidate()
+            ? (() => {
+                const taken = takeToolPreludeCandidate();
+                if (taken) {
+                  log?.debug?.(
+                    {
+                      sessionKey,
+                      path: "tool_event_trigger",
+                      textSample: taken.slice(0, 120),
+                    },
+                    "Tool prelude candidate selected from tool event"
+                  );
+                }
+                return taken;
+              })()
             : info.kind === "block"
               ? maybeTakeToolPreludeCandidateFromBlock(payload.text)
               : undefined;
         const effectivePayloadText = toolPreludeText ?? payload.text;
         const isBlockWithText = info.kind === "block" && !!effectivePayloadText?.trim();
+        const hasInlineMediaProtocol = !!effectivePayloadText && hasMediaTags(effectivePayloadText);
 
         // Allow media deliveries even when verbose is off (e.g., tool-kind images).
         const explicitMediaUrl = payload.mediaUrl || payload.mediaUrls?.[0];
@@ -1803,7 +1944,7 @@ export async function monitorDingTalkProvider(
           (allowNonFinal && info.kind !== "block" && info.kind !== "tool");
         const skipText = !allowText;
 
-        if (skipText && !mediaUrl) {
+        if (skipText && !mediaUrl && !hasInlineMediaProtocol) {
           log?.debug?.({ kind: info.kind, sessionKey }, "Skipping non-final reply (verbose off)");
           return;
         }
@@ -1818,10 +1959,11 @@ export async function monitorDingTalkProvider(
           if (isHttpUrl) {
             // HTTP URL - send directly via sessionWebhook
             log?.debug?.({ mediaUrl: mediaUrl.slice(0, 50) }, "Sending HTTP image to DingTalk");
-            const imageResult = await sendImageViaSessionWebhook(chat.sessionWebhook, mediaUrl, { logger: log });
-            if (imageResult.ok) {
-              markDelivered("image_http");
-            }
+          const imageResult = await sendImageViaSessionWebhook(chat.sessionWebhook, mediaUrl, { logger: log });
+          if (imageResult.ok) {
+            runDeliveryState.mediaDelivered = true;
+            markDelivered("image_http");
+          }
           } else {
             // Local file path - need to upload first
             log?.info?.({ mediaUrl: mediaUrl.slice(0, 80) }, "Loading local media file");
@@ -1857,6 +1999,7 @@ export async function monitorDingTalkProvider(
                     { logger: log }
                   );
                   if (sentImage.ok) {
+                    runDeliveryState.mediaDelivered = true;
                     markDelivered("image_local");
                   }
                 } else {
@@ -1888,6 +2031,7 @@ export async function monitorDingTalkProvider(
                       logger: log,
                     });
                     if (fileResult.ok) {
+                      runDeliveryState.mediaDelivered = true;
                       markDelivered("file_local");
                     }
                   }
@@ -1902,8 +2046,10 @@ export async function monitorDingTalkProvider(
         }
 
         // If the "text" is actually a standalone local path, treat it as media-only.
+        const preserveTextForInlineMedia = skipText && hasInlineMediaProtocol;
         const text =
-          skipText || (derivedMediaUrl && derivedMediaUrl === inferMediaUrlFromStandaloneText(trimmedText ?? ""))
+          (!preserveTextForInlineMedia && skipText) ||
+          (derivedMediaUrl && derivedMediaUrl === inferMediaUrlFromStandaloneText(trimmedText ?? ""))
             ? undefined
             : effectivePayloadText;
         const normalizedText =
@@ -1918,6 +2064,10 @@ export async function monitorDingTalkProvider(
         if (!normalizedText?.trim()) {
           // If we sent an image but no text, that's still a valid delivery
           if (mediaUrl) {
+            if (info.kind === "final" && runDeliveryState.mediaDelivered) {
+              blockTextBufferState.finalTextDelivered = true;
+              runDeliveryState.finalDelivered = true;
+            }
             log?.debug?.({}, "deliver: image sent, no text");
             return;
           }
@@ -2125,7 +2275,12 @@ export async function monitorDingTalkProvider(
             }
           }
           if (mediaResult.successCount > 0) {
+            runDeliveryState.mediaDelivered = true;
             markDelivered("media_items");
+            if (info.kind === "final") {
+              blockTextBufferState.finalTextDelivered = true;
+              runDeliveryState.finalDelivered = true;
+            }
           }
 
           log?.info?.(

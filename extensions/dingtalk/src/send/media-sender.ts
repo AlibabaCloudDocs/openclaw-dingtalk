@@ -15,6 +15,51 @@ import { uploadMedia } from "../api/media.js";
 import type { MediaItem } from "../media-protocol.js";
 import { sendImageWithMediaIdViaSessionWebhook, type ReplyLogger } from "./reply.js";
 
+type DingTalkWebhookResult = {
+    errcode?: number;
+    errmsg?: string;
+};
+
+async function readDingTalkWebhookResult(
+    resp: unknown
+): Promise<{ rawText: string; data: DingTalkWebhookResult | undefined; recognized: boolean }> {
+    const anyResp = resp as Record<string, any>;
+
+    if (typeof anyResp?.text === "function") {
+        const rawText = await anyResp.text();
+        if (!rawText?.trim()) {
+            return { rawText: "", data: undefined, recognized: false };
+        }
+        try {
+            const parsed = JSON.parse(rawText) as DingTalkWebhookResult;
+            return { rawText, data: parsed, recognized: true };
+        } catch {
+            return { rawText, data: undefined, recognized: false };
+        }
+    }
+
+    if (typeof anyResp?.json === "function") {
+        try {
+            const parsed = (await anyResp.json()) as DingTalkWebhookResult;
+            return { rawText: JSON.stringify(parsed ?? {}), data: parsed, recognized: true };
+        } catch {
+            return { rawText: "", data: undefined, recognized: false };
+        }
+    }
+
+    return { rawText: "", data: undefined, recognized: false };
+}
+
+function isDingTalkWebhookOk(
+    data: DingTalkWebhookResult | undefined,
+    recognized: boolean
+): boolean {
+    if (!recognized) return false;
+    if (!data) return true;
+    if (data.errcode === undefined) return true;
+    return data.errcode === 0;
+}
+
 /**
  * Result of sending a media item.
  */
@@ -212,10 +257,14 @@ async function sendFileToWebhook(
     sessionWebhook: string,
     logger?: ReplyLogger
 ): Promise<SendMediaResult> {
+    const ext = path.extname(fileName).replace(/^\./, "").toLowerCase();
+    const fileType = ext || "file";
     const payload = {
         msgtype: "file",
         file: {
-            media_id: mediaId,
+            mediaId,
+            fileType,
+            fileName,
         },
     };
 
@@ -226,17 +275,31 @@ async function sendFileToWebhook(
             body: JSON.stringify(payload),
             signal: AbortSignal.timeout(30_000),
         });
+        const parsed = await readDingTalkWebhookResult(resp);
 
         if (!resp.ok) {
-            const data = await resp.text();
             logger?.error?.(
-                { err: { message: `HTTP ${resp.status}`, data: data.slice(0, 200) } },
+                { err: { message: `HTTP ${resp.status}`, data: parsed.rawText.slice(0, 200) } },
                 "Failed to send file to DingTalk"
             );
             return { ok: false, error: `HTTP ${resp.status}` };
         }
 
-        logger?.debug?.({ mediaId, fileName }, "Sent file to DingTalk");
+        if (!isDingTalkWebhookOk(parsed.data, parsed.recognized)) {
+            logger?.error?.(
+                {
+                    errcode: parsed.data?.errcode,
+                    errmsg: parsed.data?.errmsg,
+                    response: parsed.rawText.slice(0, 300),
+                    mediaId,
+                    fileName,
+                },
+                "DingTalk API returned error for file send"
+            );
+            return { ok: false, error: parsed.data?.errmsg ?? "API error" };
+        }
+
+        logger?.debug?.({ mediaId, fileName, response: parsed.rawText.slice(0, 200) }, "Sent file to DingTalk");
         return { ok: true, mediaId };
     } catch (err) {
         const error = (err as Error)?.message ?? "发送失败";
@@ -268,17 +331,30 @@ async function sendVideoToWebhook(
             body: JSON.stringify(payload),
             signal: AbortSignal.timeout(30_000),
         });
+        const parsed = await readDingTalkWebhookResult(resp);
 
         if (!resp.ok) {
-            const data = await resp.text();
             logger?.error?.(
-                { err: { message: `HTTP ${resp.status}`, data: data.slice(0, 200) } },
+                { err: { message: `HTTP ${resp.status}`, data: parsed.rawText.slice(0, 200) } },
                 "Failed to send video to DingTalk"
             );
             return { ok: false, error: `HTTP ${resp.status}` };
         }
 
-        logger?.debug?.({ mediaId }, "Sent video to DingTalk");
+        if (!isDingTalkWebhookOk(parsed.data, parsed.recognized)) {
+            logger?.error?.(
+                {
+                    errcode: parsed.data?.errcode,
+                    errmsg: parsed.data?.errmsg,
+                    response: parsed.rawText.slice(0, 300),
+                    mediaId,
+                },
+                "DingTalk API returned error for video send"
+            );
+            return { ok: false, error: parsed.data?.errmsg ?? "API error" };
+        }
+
+        logger?.debug?.({ mediaId, response: parsed.rawText.slice(0, 200) }, "Sent video to DingTalk");
         return { ok: true, mediaId };
     } catch (err) {
         const error = (err as Error)?.message ?? "发送失败";
@@ -313,17 +389,30 @@ async function sendAudioToWebhook(
             body: JSON.stringify(payload),
             signal: AbortSignal.timeout(30_000),
         });
+        const parsed = await readDingTalkWebhookResult(resp);
 
         if (!resp.ok) {
-            const data = await resp.text();
             logger?.error?.(
-                { err: { message: `HTTP ${resp.status}`, data: data.slice(0, 200) } },
+                { err: { message: `HTTP ${resp.status}`, data: parsed.rawText.slice(0, 200) } },
                 "Failed to send audio to DingTalk"
             );
             return { ok: false, error: `HTTP ${resp.status}` };
         }
 
-        logger?.debug?.({ mediaId }, "Sent audio to DingTalk");
+        if (!isDingTalkWebhookOk(parsed.data, parsed.recognized)) {
+            logger?.error?.(
+                {
+                    errcode: parsed.data?.errcode,
+                    errmsg: parsed.data?.errmsg,
+                    response: parsed.rawText.slice(0, 300),
+                    mediaId,
+                },
+                "DingTalk API returned error for audio send"
+            );
+            return { ok: false, error: parsed.data?.errmsg ?? "API error" };
+        }
+
+        logger?.debug?.({ mediaId, response: parsed.rawText.slice(0, 200) }, "Sent audio to DingTalk");
         return { ok: true, mediaId };
     } catch (err) {
         const error = (err as Error)?.message ?? "发送失败";

@@ -591,7 +591,7 @@ describe("monitorDingTalkProvider", () => {
         { kind: "block" }
       );
       await params.dispatcherOptions.deliver(
-        { text: "现在让我为你整理所有找到的 AI 领域优质聚合网站及其 RSS 订阅源：" },
+        { text: "最终汇总如下：" },
         { kind: "block" }
       );
       await params.dispatcherOptions.deliver(
@@ -616,10 +616,88 @@ describe("monitorDingTalkProvider", () => {
     expect(first.msgtype).toBe("text");
     expect(first.text.content).toBe("我先帮你搜索一下相关信息。");
     expect(second.msgtype).toBe("text");
-    expect(second.text.content).toContain("现在让我为你整理所有找到的 AI 领域优质聚合网站及其 RSS 订阅源：");
+    expect(second.text.content).toContain("最终汇总如下：");
     expect(second.text.content).toContain("## AI领域优质聚合网站及RSS源");
     expect(second.text.content).not.toContain("让我检查一下 BestBlogs.dev 是否有 RSS 源。");
     expect(second.text.content).not.toContain("让我尝试通过浏览器查看 BestBlogs.dev 网站。");
+  });
+
+  it("emits first-block loose prelude immediately in verbose off flow", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      const prelude = "我理解你希望定时从这些RSS源获取最新信息。我可以为你设置一个定时任务。";
+      await params.dispatcherOptions.deliver({ text: prelude }, { kind: "block" });
+      await params.dispatcherOptions.deliver({ text: "cron add ai rss" }, { kind: "tool" });
+      await params.dispatcherOptions.deliver(
+        { text: `${prelude}\n已为你创建每6小时执行一次的任务。` },
+        { kind: "final" }
+      );
+      return { queuedFinal: true, counts: { tool: 1, block: 1, final: 1 } };
+    });
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const first = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    const second = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(first.msgtype).toBe("text");
+    expect(first.text.content).toBe("我理解你希望定时从这些RSS源获取最新信息。我可以为你设置一个定时任务。");
+    expect(second.msgtype).toBe("text");
+    expect(second.text.content).toBe("已为你创建每6小时执行一次的任务。");
+  });
+
+  it("falls back to full synthetic final when summary-tail only keeps late section", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver(
+        { text: "我理解你希望定时从这些RSS源获取最新信息。我可以为你设置一个定时任务。" },
+        { kind: "block" }
+      );
+      await params.dispatcherOptions.deliver({ text: "让我为你创建一个自动化的方案：" }, { kind: "block" });
+      await params.dispatcherOptions.deliver(
+        {
+          text: "定时任务详情：\n- 检查频率：每6小时一次\n- 监控源：你指定的5个AI RSS源\n- 输出：汇总重要更新和关键信息摘要",
+        },
+        { kind: "block" }
+      );
+      await params.dispatcherOptions.deliver(
+        { text: "最终汇总如下：\n这个方案的优势：\n1. 自动化\n2. 去重过滤\n3. 智能摘要" },
+        { kind: "block" }
+      );
+      return { queuedFinal: false, counts: { tool: 0, block: 4, final: 0 } };
+    });
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const first = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    const second = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(first.msgtype).toBe("text");
+    expect(first.text.content).toBe("我理解你希望定时从这些RSS源获取最新信息。我可以为你设置一个定时任务。");
+    expect(second.msgtype).toBe("text");
+    expect(second.text.content).toContain("定时任务详情：");
+    expect(second.text.content).toContain("这个方案的优势：");
+    expect(second.text.content).toContain("最终汇总如下：");
   });
 
   it("keeps newline between synthesized list sections", async () => {
@@ -1237,6 +1315,43 @@ describe("monitorDingTalkProvider", () => {
     expect(body.msgtype).toBe("image");
   });
 
+  it("sends inline DING file tag from block-only reply even when verbose is off", async () => {
+    const runtime = getDingTalkRuntime();
+    const mediaApi = await import("./api/media.js");
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+
+    const filePath = join(testStateDir, "skill_creation_guide.md");
+    writeFileSync(filePath, "# guide");
+
+    (mediaApi.uploadMedia as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      mediaId: "media-file-123",
+    });
+
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver(
+        { text: `[DING:FILE path="${filePath}"]` },
+        { kind: "block" }
+      );
+      return { queuedFinal: false, counts: { tool: 0, block: 1, final: 0 } };
+    });
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("file");
+    expect(body.file.mediaId).toBe("media-file-123");
+  });
+
   it("streams AI card via create->deliver->streaming->finish and strips directives", async () => {
     const runtime = getDingTalkRuntime();
     const aiCardAccount = {
@@ -1691,6 +1806,51 @@ describe("monitorDingTalkProvider", () => {
     expect(body.text.content).toBe("正常发送内容");
   });
 
+  it("does not trigger transcript fallback after a media-only final delivery", async () => {
+    const runtime = getDingTalkRuntime();
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    const mediaApi = await import("./api/media.js");
+
+    const filePath = join(testStateDir, "skill_creation_guide.md");
+    writeFileSync(filePath, "# hello");
+    (mediaApi.uploadMedia as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      mediaId: "media-file-001",
+    });
+
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver(
+        { text: `[DING:FILE path="${filePath}"]` },
+        { kind: "final" }
+      );
+      return { counts: { block: 0, final: 1 } };
+    });
+
+    const sessionKey = "agent:main:dingtalk:group:cid123";
+    writeSessionTranscript({
+      sessionKey,
+      messages: [
+        {
+          text: "这条不应该被 transcript 回退再次发送",
+        },
+      ],
+    });
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("file");
+  });
+
   it("picks the last delivery-mirror assistant text as fallback", async () => {
     const sessionKey = "agent:main:dingtalk:group:cid123";
     const baseTs = Date.now();
@@ -1730,6 +1890,32 @@ describe("monitorDingTalkProvider", () => {
       messages: [
         {
           text: "[[reply_to_current]][[audio_as_voice]]",
+        },
+      ],
+    });
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("skips transcript fallback when mirror text only contains DING media tags", async () => {
+    const sessionKey = "agent:main:dingtalk:group:cid123";
+    const mediaPath = join(testStateDir, "skill_creation_guide.md");
+    writeFileSync(mediaPath, "# file");
+
+    writeSessionTranscript({
+      sessionKey,
+      messages: [
+        {
+          text: `[DING:FILE path="${mediaPath}"]`,
         },
       ],
     });

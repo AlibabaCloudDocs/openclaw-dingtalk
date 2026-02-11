@@ -58,7 +58,9 @@ describe("sendMediaItem (sessionWebhook payload shape)", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
     expect(body.msgtype).toBe("file");
-    expect(body.file.media_id).toBe("mid-file-001");
+    expect(body.file.mediaId).toBe("mid-file-001");
+    expect(body.file.fileType).toBe("pdf");
+    expect(body.file.fileName).toBe("report.pdf");
   });
 
   it("sends voice with voice.media_id and duration seconds", async () => {
@@ -121,5 +123,56 @@ describe("sendMediaItem (sessionWebhook payload shape)", () => {
     expect(body.msgtype).toBe("video");
     expect(body.video.media_id).toBe("mid-video-001");
   });
-});
 
+  it("treats HTTP 200 API error body as send failure", async () => {
+    vi.mocked(uploadMedia).mockResolvedValueOnce({ ok: true, mediaId: "mid-file-001" } as any);
+
+    const filePath = join(dir, "report.pdf");
+    writeFileSync(filePath, "fake-pdf");
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ errcode: 310000, errmsg: "invalid media_id" }),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await sendMediaItem(
+      { type: "file", path: filePath, name: "report.pdf" },
+      {
+        account: {} as any,
+        sessionWebhook: "https://oapi.dingtalk.com/robot/sendBySession?session=xxx",
+        tokenManager: {} as any,
+      }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("invalid media_id");
+  });
+
+  it("treats HTTP 200 with empty response body as send failure", async () => {
+    vi.mocked(uploadMedia).mockResolvedValueOnce({ ok: true, mediaId: "mid-file-001" } as any);
+
+    const filePath = join(dir, "report.pdf");
+    writeFileSync(filePath, "fake-pdf");
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => "",
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await sendMediaItem(
+      { type: "file", path: filePath, name: "report.pdf" },
+      {
+        account: {} as any,
+        sessionWebhook: "https://oapi.dingtalk.com/robot/sendBySession?session=xxx",
+        tokenManager: {} as any,
+      }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("API error");
+  });
+});
