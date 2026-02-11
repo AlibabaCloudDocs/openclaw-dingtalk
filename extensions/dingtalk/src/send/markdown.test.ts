@@ -110,4 +110,31 @@ const b = 2;
     expect(result).toContain("const a = 1;\nconst b = 2;");
     expect(result).not.toContain("const a = 1;  \n");
   });
+
+  it("repairs collapsed inline heading markers around paragraph boundaries", () => {
+    const input =
+      "根据搜索结果，我找到了一些AI领域的优质聚合网站和RSS订阅源。让我为你整理一下：## AI领域优质聚合网站及RSS源### 1. ArXiv AI 论文";
+
+    const result = convertMarkdownForDingTalk(input);
+
+    expect(result).toContain("让我为你整理一下：\n\n## AI领域优质聚合网站及RSS源");
+    expect(result).toContain("AI领域优质聚合网站及RSS源\n\n### 1. ArXiv AI 论文");
+  });
+
+  it("repairs collapsed heading and paragraph at section end", () => {
+    const input = "## 订阅建议你可以使用以下RSS阅读器来订阅这些源：";
+
+    const result = convertMarkdownForDingTalk(input);
+
+    expect(result).toContain("## 订阅建议\n\n你可以使用以下RSS阅读器来订阅这些源：");
+  });
+
+  it("splits trailing question into a separate paragraph", () => {
+    const input =
+      "- Inoreader 或 Feedly: 在线RSS服务要订阅这些RSS源，只需将对应的RSS链接添加到你的RSS阅读器中即可。这样你就能在一个地方集中获取所有AI领域的最新资讯了！需要我帮你设置具体的RSS阅读器或者有其他问题吗？";
+
+    const result = convertMarkdownForDingTalk(input);
+
+    expect(result).toContain("最新资讯了！\n\n需要我帮你设置具体的RSS阅读器或者有其他问题吗？");
+  });
 });

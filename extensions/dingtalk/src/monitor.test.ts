@@ -479,6 +479,237 @@ describe("monitorDingTalkProvider", () => {
     expect(body.text.content).toBe("实时块文本");
   });
 
+  it("emits tool prelude early but keeps final text as one complete message", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "我先帮你搜索一下相关信息。" }, { kind: "block" });
+      await params.dispatcherOptions.deliver({ text: "web_search: running..." }, { kind: "tool" });
+      await params.dispatcherOptions.deliver({ text: "第一段" }, { kind: "block" });
+      await params.dispatcherOptions.deliver({ text: "第一段\n第二段" }, { kind: "block" });
+      await params.dispatcherOptions.deliver({ text: "第一段\n第二段\n第三段" }, { kind: "final" });
+      return { queuedFinal: true, counts: { tool: 1, block: 3, final: 1 } };
+    });
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const first = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    const second = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(first.msgtype).toBe("text");
+    expect(first.text.content).toBe("我先帮你搜索一下相关信息。");
+    expect(second.msgtype).toBe("text");
+    expect(second.text.content).toBe("第一段\n第二段\n第三段");
+  });
+
+  it("emits block-only tool prelude early and strips it from final summary", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "我先帮你搜索一下相关信息。" }, { kind: "block" });
+      await params.dispatcherOptions.deliver(
+        { text: "我先帮你搜索一下相关信息。\n根据搜索结果，我找到了 5 个可用 RSS 源。" },
+        { kind: "final" }
+      );
+      return { queuedFinal: true, counts: { tool: 0, block: 1, final: 1 } };
+    });
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const first = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    const second = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(first.msgtype).toBe("text");
+    expect(first.text.content).toBe("我先帮你搜索一下相关信息。");
+    expect(second.msgtype).toBe("text");
+    expect(second.text.content).toBe("根据搜索结果，我找到了 5 个可用 RSS 源。");
+  });
+
+  it("emits block-only tool prelude early and keeps synthetic final summary separate", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "我先帮你搜索一下相关信息。" }, { kind: "block" });
+      await params.dispatcherOptions.deliver(
+        { text: "我先帮你搜索一下相关信息。\n根据搜索结果，我找到了 5 个可用 RSS 源。" },
+        { kind: "block" }
+      );
+      return { queuedFinal: false, counts: { tool: 0, block: 2, final: 0 } };
+    });
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const first = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    const second = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(first.msgtype).toBe("text");
+    expect(first.text.content).toBe("我先帮你搜索一下相关信息。");
+    expect(second.msgtype).toBe("text");
+    expect(second.text.content).toBe("根据搜索结果，我找到了 5 个可用 RSS 源。");
+  });
+
+  it("uses summary-tail only when synthesizing final from many block updates", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "我先帮你搜索一下相关信息。" }, { kind: "block" });
+      await params.dispatcherOptions.deliver(
+        { text: "让我检查一下 BestBlogs.dev 是否有 RSS 源。" },
+        { kind: "block" }
+      );
+      await params.dispatcherOptions.deliver(
+        { text: "让我尝试通过浏览器查看 BestBlogs.dev 网站。" },
+        { kind: "block" }
+      );
+      await params.dispatcherOptions.deliver(
+        { text: "现在让我为你整理所有找到的 AI 领域优质聚合网站及其 RSS 订阅源：" },
+        { kind: "block" }
+      );
+      await params.dispatcherOptions.deliver(
+        { text: "## AI领域优质聚合网站及RSS源\n1. OpenAI 官方博客\n- RSS: https://openai.com/blog/rss.xml" },
+        { kind: "block" }
+      );
+      return { queuedFinal: false, counts: { tool: 0, block: 5, final: 0 } };
+    });
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const first = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    const second = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(first.msgtype).toBe("text");
+    expect(first.text.content).toBe("我先帮你搜索一下相关信息。");
+    expect(second.msgtype).toBe("text");
+    expect(second.text.content).toContain("现在让我为你整理所有找到的 AI 领域优质聚合网站及其 RSS 订阅源：");
+    expect(second.text.content).toContain("## AI领域优质聚合网站及RSS源");
+    expect(second.text.content).not.toContain("让我检查一下 BestBlogs.dev 是否有 RSS 源。");
+    expect(second.text.content).not.toContain("让我尝试通过浏览器查看 BestBlogs.dev 网站。");
+  });
+
+  it("keeps newline between synthesized list sections", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver(
+        { text: "1. OpenAI 官方博客\n- RSS地址: https://openai.com/blog/rss.xml" },
+        { kind: "block" }
+      );
+      await params.dispatcherOptions.deliver(
+        { text: "2. arXiv AI论文\n- RSS地址: https://rss.arxiv.org/rss/cs.AI" },
+        { kind: "block" }
+      );
+      return { queuedFinal: false, counts: { tool: 0, block: 2, final: 0 } };
+    });
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toContain("rss.xml\n2. arXiv AI论文");
+  });
+
+  it("does not treat non-tool opening text as tool prelude", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "让我为你推荐一些优秀的 RSS 阅读器：" }, { kind: "block" });
+      await params.dispatcherOptions.deliver(
+        { text: "让我为你推荐一些优秀的 RSS 阅读器：\n1. Feedly\n2. Inoreader" },
+        { kind: "final" }
+      );
+      return { queuedFinal: true, counts: { tool: 0, block: 1, final: 1 } };
+    });
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toBe("让我为你推荐一些优秀的 RSS 阅读器：\n1. Feedly\n2. Inoreader");
+  });
+
+  it("does not split pure-text final replies even when block streaming is enabled", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      await params.dispatcherOptions.deliver({ text: "第一段" }, { kind: "block" });
+      await params.dispatcherOptions.deliver({ text: "第一段\n第二段" }, { kind: "block" });
+      await params.dispatcherOptions.deliver({ text: "第一段\n第二段\n第三段" }, { kind: "final" });
+      return { queuedFinal: true, counts: { tool: 0, block: 2, final: 1 } };
+    });
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toBe("第一段\n第二段\n第三段");
+  });
+
   it("isolates group SessionKey per sender when enabled", async () => {
     const runtime = getDingTalkRuntime();
     const account = { ...BASIC_ACCOUNT, isolateContextPerUserInGroup: true };

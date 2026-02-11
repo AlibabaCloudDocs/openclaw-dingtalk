@@ -138,6 +138,17 @@ function injectChinesePromptForBareNewCommand(text: string): string {
 }
 
 const REASONING_HEADER_RE = /^Reasoning:\s*/i;
+const TOOL_PRELUDE_MAX_CHARS = 280;
+const TOOL_PRELUDE_MAX_LINES = 4;
+const TOOL_PRELUDE_ZH_PREFIX_RE = /(让我|我先|我来|先让我|先帮你|我先帮你|先去|正在)/;
+const TOOL_PRELUDE_ZH_ACTION_RE =
+  /(搜索|检索|查询|查找|查看|检查|核实|读取|抓取|获取|调用|执行|运行|分析|浏览|收集|web_search|aliyun_|code_interpreter|tool)/i;
+const TOOL_PRELUDE_EN_PREFIX_RE =
+  /\b(let me|i(?:'|\u2019)ll|i will|first,?\s*i(?:'|\u2019)ll|i'm going to)\b/i;
+const TOOL_PRELUDE_EN_ACTION_RE =
+  /\b(search|look up|check|verify|fetch|retrieve|inspect|call|run|use|query|browse|scan)\b/i;
+const SYNTHETIC_FINAL_SUMMARY_START_RE =
+  /(?:现在|接下来)?(?:让我|我来)(?:为你|帮你)?(?:整理|汇总)|(?:最终|完整)?(?:结果|总结)(?:如下|如下所示)?|^(?:##|###)\s|^\d+\.\s/m;
 
 function isReasoningPayload(text: string): boolean {
   const trimmed = text.trimStart();
@@ -164,6 +175,81 @@ function softenReasoningMarkdown(text: string): string {
     return text;
   }
   return lines.map((line) => (line.trim().length ? `> ${line}` : ">")).join("\n");
+}
+
+function isLikelyToolPreludeText(raw?: string): boolean {
+  const normalized = normalizeSilentFallbackText(raw);
+  if (!normalized) {
+    return false;
+  }
+  const trimmed = normalized.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed.length > TOOL_PRELUDE_MAX_CHARS || trimmed.split("\n").length > TOOL_PRELUDE_MAX_LINES) {
+    return false;
+  }
+  // Large markdown/list payloads are usually part of the final answer, not tool prelude.
+  if (/[\n]{2,}|^[#>*-]/m.test(trimmed) || /^\d+[.)]\s/m.test(trimmed)) {
+    return false;
+  }
+  const zhLikely =
+    (TOOL_PRELUDE_ZH_PREFIX_RE.test(trimmed) && TOOL_PRELUDE_ZH_ACTION_RE.test(trimmed)) ||
+    /(?:正在|先)(?:为你|帮你)?(?:搜索|查询|检查|调用|获取)/.test(trimmed);
+  if (zhLikely) {
+    return true;
+  }
+  const enLikely = TOOL_PRELUDE_EN_PREFIX_RE.test(trimmed) && TOOL_PRELUDE_EN_ACTION_RE.test(trimmed);
+  if (enLikely) {
+    return true;
+  }
+  // Fallback: concise tool-status style text that explicitly names tool execution.
+  return /\b(web_search|code_interpreter|aliyun_|mcp|tool)\b/i.test(trimmed) && trimmed.length <= 140;
+}
+
+function trimLeadingPreludeText(rawText: string, rawPrelude: string): string | undefined {
+  if (!rawText?.trim()) {
+    return undefined;
+  }
+  if (!rawPrelude?.trim()) {
+    return rawText;
+  }
+
+  const removePrefix = (candidate: string): string | undefined => {
+    const cleaned = candidate.replace(/^\s*\n+/, "\n").trimStart();
+    return cleaned.trim() ? cleaned : undefined;
+  };
+
+  if (rawText.startsWith(rawPrelude)) {
+    return removePrefix(rawText.slice(rawPrelude.length));
+  }
+  const leftTrimmed = rawText.trimStart();
+  if (leftTrimmed.startsWith(rawPrelude)) {
+    return removePrefix(leftTrimmed.slice(rawPrelude.length));
+  }
+
+  const normalizedText = normalizeSilentFallbackText(rawText);
+  const normalizedPrelude = normalizeSilentFallbackText(rawPrelude);
+  if (normalizedText && normalizedPrelude && normalizedText.startsWith(normalizedPrelude)) {
+    return removePrefix(normalizedText.slice(normalizedPrelude.length));
+  }
+
+  return rawText;
+}
+
+function isLikelySyntheticFinalSummaryStart(raw?: string): boolean {
+  const normalized = normalizeSilentFallbackText(raw);
+  if (!normalized) {
+    return false;
+  }
+  const trimmed = normalized.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (SYNTHETIC_FINAL_SUMMARY_START_RE.test(trimmed)) {
+    return true;
+  }
+  return /\b(?:summary|final answer|here(?:'|’)s what i found)\b/i.test(trimmed);
 }
 
 function hasAllowedCommandToken(text?: string): boolean {
@@ -1197,8 +1283,10 @@ export async function monitorDingTalkProvider(
     if (verboseOverride) {
       verboseOverrides.set(sessionKey, verboseOverride);
     }
+    const verboseOverrideForSession = verboseOverrides.get(sessionKey);
+    const allowFullNonFinal = verboseOverrideForSession === "full";
     const allowNonFinal =
-      verboseOverrides.get(sessionKey) === "off"
+      verboseOverrideForSession === "off"
         ? false
         : verboseOverrides.has(sessionKey)
           ? true
@@ -1284,14 +1372,21 @@ export async function monitorDingTalkProvider(
       Boolean(account.aiCard.templateId);
     const runDeliveryState = {
       deliveredCount: 0,
+      finalDelivered: false,
       lastTextCandidate: undefined as string | undefined,
       fallbackSent: false,
     };
     const blockTextBufferState = {
       sawBlockText: false,
       accumulatedText: "",
+      synthesizedSummaryText: "",
+      summaryStarted: false,
       finalTextDelivered: false,
       synthesizedFinalSent: false,
+      streamedBlockText: false,
+      pendingToolPreludeText: "",
+      toolPreludeDelivered: false,
+      deliveredToolPreludeText: undefined as string | undefined,
     };
     const mergeBufferedBlockText = (previous: string, next: string): string => {
       if (!next) return previous;
@@ -1302,7 +1397,7 @@ export async function monitorDingTalkProvider(
       if (previous.endsWith(next)) return previous;
       if (next.includes(previous)) return next;
       if (previous.includes(next)) return previous;
-      return `${previous}${next}`;
+      return `${previous}\n${next}`;
     };
     const rememberBufferedBlockText = (text?: string): void => {
       const normalized = normalizeSilentFallbackText(text);
@@ -1314,6 +1409,64 @@ export async function monitorDingTalkProvider(
         blockTextBufferState.accumulatedText,
         normalized
       );
+      const isSummaryStart = isLikelySyntheticFinalSummaryStart(normalized);
+      if (!blockTextBufferState.summaryStarted && isSummaryStart) {
+        blockTextBufferState.summaryStarted = true;
+        blockTextBufferState.synthesizedSummaryText = normalized;
+        return;
+      }
+      if (blockTextBufferState.summaryStarted) {
+        blockTextBufferState.synthesizedSummaryText = mergeBufferedBlockText(
+          blockTextBufferState.synthesizedSummaryText,
+          normalized
+        );
+      }
+    };
+    const rememberToolPreludeCandidate = (text?: string): void => {
+      if (blockTextBufferState.toolPreludeDelivered) {
+        return;
+      }
+      const normalized = normalizeSilentFallbackText(text);
+      if (!normalized) {
+        return;
+      }
+      const merged = mergeBufferedBlockText(blockTextBufferState.pendingToolPreludeText, normalized);
+      // Tool prelude should stay short; long multi-line content likely belongs to the final answer.
+      if (merged.length > TOOL_PRELUDE_MAX_CHARS || merged.split("\n").length > TOOL_PRELUDE_MAX_LINES) {
+        return;
+      }
+      blockTextBufferState.pendingToolPreludeText = merged;
+    };
+    const takeToolPreludeCandidate = (): string | undefined => {
+      if (blockTextBufferState.toolPreludeDelivered) {
+        return undefined;
+      }
+      const normalized = normalizeSilentFallbackText(blockTextBufferState.pendingToolPreludeText);
+      if (!normalized) {
+        return undefined;
+      }
+      blockTextBufferState.pendingToolPreludeText = "";
+      blockTextBufferState.toolPreludeDelivered = true;
+      return normalized;
+    };
+    const maybeTakeToolPreludeCandidateFromBlock = (text?: string): string | undefined => {
+      if (blockTextBufferState.toolPreludeDelivered) {
+        return undefined;
+      }
+      if (!isLikelyToolPreludeText(text)) {
+        return undefined;
+      }
+      return takeToolPreludeCandidate();
+    };
+    const trimDeliveredPreludeFromReply = (text?: string): string | undefined => {
+      if (!text?.trim()) {
+        return undefined;
+      }
+      const deliveredPrelude = normalizeSilentFallbackText(blockTextBufferState.deliveredToolPreludeText);
+      if (!deliveredPrelude) {
+        return text;
+      }
+      return trimLeadingPreludeText(text, deliveredPrelude);
     };
     const maybeSendBufferedBlockTextFinal = async (
       dispatchResult: unknown,
@@ -1330,10 +1483,10 @@ export async function monitorDingTalkProvider(
         ) => Promise<void> | void;
       }
     ): Promise<void> => {
-      if (account.streamBlockTextToSession) {
+      if (aiCardAutoReplyEnabled) {
         return;
       }
-      if (aiCardAutoReplyEnabled) {
+      if (blockTextBufferState.streamedBlockText) {
         return;
       }
       if (
@@ -1344,8 +1497,11 @@ export async function monitorDingTalkProvider(
         return;
       }
 
-      const text = blockTextBufferState.accumulatedText.trim()
-        ? blockTextBufferState.accumulatedText
+      const synthesizedSource = blockTextBufferState.summaryStarted
+        ? blockTextBufferState.synthesizedSummaryText
+        : blockTextBufferState.accumulatedText;
+      const text = synthesizedSource.trim()
+        ? trimDeliveredPreludeFromReply(synthesizedSource)
         : undefined;
       if (!text) {
         return;
@@ -1402,7 +1558,9 @@ export async function monitorDingTalkProvider(
       runDeliveryState.lastTextCandidate = normalized;
     };
     const maybeSendSilentRunFallback = async (): Promise<void> => {
-      if (runDeliveryState.fallbackSent || runDeliveryState.deliveredCount > 0) {
+      // Follow Telegram-style delivery semantics:
+      // only skip fallback when a real final has been delivered.
+      if (runDeliveryState.fallbackSent || runDeliveryState.finalDelivered) {
         return;
       }
       if (!chat.sessionWebhook?.trim()) {
@@ -1612,28 +1770,37 @@ export async function monitorDingTalkProvider(
           return;
         }
 
-        const shouldBufferBlockText =
-          info.kind === "block" && account.streamBlockTextToSession === false;
-        if (shouldBufferBlockText) {
+        if (info.kind === "block") {
           rememberBufferedBlockText(payload.text);
+          rememberToolPreludeCandidate(payload.text);
         }
 
-        // Allow "block" kind messages if they have text and block text streaming is enabled
-        const isBlockWithText = info.kind === "block" && !!payload.text?.trim();
+        const toolPreludeText =
+          info.kind === "tool"
+            ? takeToolPreludeCandidate()
+            : info.kind === "block"
+              ? maybeTakeToolPreludeCandidateFromBlock(payload.text)
+              : undefined;
+        const effectivePayloadText = toolPreludeText ?? payload.text;
+        const isBlockWithText = info.kind === "block" && !!effectivePayloadText?.trim();
 
         // Allow media deliveries even when verbose is off (e.g., tool-kind images).
         const explicitMediaUrl = payload.mediaUrl || payload.mediaUrls?.[0];
-        const trimmedText = payload.text?.trim();
+        const trimmedText = effectivePayloadText?.trim();
         const derivedMediaUrl =
           !explicitMediaUrl && trimmedText
             ? inferMediaUrlFromStandaloneText(trimmedText)
             : undefined;
         const mediaUrl = explicitMediaUrl || derivedMediaUrl;
 
+        const allowBlockText =
+          isBlockWithText && account.streamBlockTextToSession && allowFullNonFinal;
+        const allowToolText = Boolean(toolPreludeText?.trim()) || (info.kind === "tool" && allowFullNonFinal);
         const allowText =
           info.kind === "final" ||
-          allowNonFinal ||
-          (isBlockWithText && account.streamBlockTextToSession);
+          allowBlockText ||
+          allowToolText ||
+          (allowNonFinal && info.kind !== "block" && info.kind !== "tool");
         const skipText = !allowText;
 
         if (skipText && !mediaUrl) {
@@ -1738,8 +1905,17 @@ export async function monitorDingTalkProvider(
         const text =
           skipText || (derivedMediaUrl && derivedMediaUrl === inferMediaUrlFromStandaloneText(trimmedText ?? ""))
             ? undefined
-            : payload.text;
-        if (!text?.trim()) {
+            : effectivePayloadText;
+        const normalizedText =
+          info.kind === "final" ? trimDeliveredPreludeFromReply(text) : text;
+        const finalIsPreludeOnly = info.kind === "final" && !!text?.trim() && !normalizedText?.trim();
+        if (finalIsPreludeOnly) {
+          blockTextBufferState.finalTextDelivered = true;
+          runDeliveryState.finalDelivered = true;
+          log?.debug?.({ sessionKey }, "Final payload only repeats delivered tool prelude; skipping duplicate final text");
+          return;
+        }
+        if (!normalizedText?.trim()) {
           // If we sent an image but no text, that's still a valid delivery
           if (mediaUrl) {
             log?.debug?.({}, "deliver: image sent, no text");
@@ -1750,15 +1926,15 @@ export async function monitorDingTalkProvider(
         }
 
         // Check if text is only directive tags (no actual content)
-        if (isOnlyDirectiveTags(text)) {
-          log?.warn?.({ originalText: text.slice(0, 100), kind: info.kind }, "Filtering directive-only text (no actual content in AI response)");
+        if (isOnlyDirectiveTags(normalizedText)) {
+          log?.warn?.({ originalText: normalizedText.slice(0, 100), kind: info.kind }, "Filtering directive-only text (no actual content in AI response)");
           return;
         }
 
         // Strip directive tags like [[reply_to_current]], [[audio_as_voice]] etc.
-        let processedText = stripDirectiveTags(text);
+        let processedText = stripDirectiveTags(normalizedText);
         if (!processedText) {
-          log?.debug?.({ original: text.slice(0, 30) }, "Empty after stripping directives");
+          log?.debug?.({ original: normalizedText.slice(0, 30) }, "Empty after stripping directives");
           return;
         }
 
@@ -1827,10 +2003,14 @@ export async function monitorDingTalkProvider(
           log?.debug?.({}, "No remaining media tags found");
         }
         // Apply response prefix to first message only
-        const shouldApplyPrefix = firstReply && account.responsePrefix && !prefixApplied.has(sessionKey);
+        const shouldApplyPrefix =
+          firstReply &&
+          !toolPreludeText &&
+          account.responsePrefix &&
+          !prefixApplied.has(sessionKey);
         if (shouldApplyPrefix) {
           processedText = applyResponsePrefix({
-            originalText: text,
+            originalText: normalizedText,
             cleanedText: processedText,
             responsePrefix: account.responsePrefix,
             context: {
@@ -1841,7 +2021,9 @@ export async function monitorDingTalkProvider(
           });
           prefixApplied.add(sessionKey);
         }
-        firstReply = false;
+        if (!toolPreludeText) {
+          firstReply = false;
+        }
 
         // Convert markdown tables and normalize markdown line breaks for DingTalk rendering.
         if (account.replyMode === "markdown") {
@@ -1860,8 +2042,15 @@ export async function monitorDingTalkProvider(
           });
           if (textReplyResult.ok) {
             markDelivered("text_reply");
+            if (toolPreludeText) {
+              blockTextBufferState.deliveredToolPreludeText = processedText;
+            }
+            if (info.kind === "block" && !toolPreludeText) {
+              blockTextBufferState.streamedBlockText = true;
+            }
             if (info.kind === "final") {
               blockTextBufferState.finalTextDelivered = true;
+              runDeliveryState.finalDelivered = true;
             }
           } else {
             // If DingTalk rejects a payload (common for markdown edge cases), retry once as plain text.
@@ -1883,8 +2072,15 @@ export async function monitorDingTalkProvider(
               });
               if (fallbackReply.ok) {
                 markDelivered("text_reply_fallback_text");
+                if (toolPreludeText) {
+                  blockTextBufferState.deliveredToolPreludeText = processedText;
+                }
+                if (info.kind === "block" && !toolPreludeText) {
+                  blockTextBufferState.streamedBlockText = true;
+                }
                 if (info.kind === "final") {
                   blockTextBufferState.finalTextDelivered = true;
+                  runDeliveryState.finalDelivered = true;
                 }
               } else if (info.kind === "final") {
                 // Best-effort: notify user that delivery failed.
