@@ -216,8 +216,29 @@ fi
 
 pass "openclaw 2026.2.6* is skipped/blocked during install/upgrade"
 
+## Regression 4: core install is pinned to OPENCLAW_PINNED_VERSION
 ## ============================================================
-## Regression 4: root install should fallback to system service
+
+# Even if the user tries to force --version/--beta, the installer should pin the
+# core to OPENCLAW_PINNED_VERSION for reproducibility.
+NPM_INSTALL_CAPTURED_SPEC=""
+install_clawdbot_npm() {
+  NPM_INSTALL_CAPTURED_SPEC="${1:-}"
+  return 0
+}
+resolve_clawdbot_bin() { echo "/tmp/fake-openclaw"; return 0; }
+ensure_clawdbot_bin_link() { return 0; }
+CLAWDBOT_VERSION="latest"
+USE_BETA=1
+install_clawdbot >/dev/null 2>&1 || fail "install_clawdbot failed"
+if [[ "$NPM_INSTALL_CAPTURED_SPEC" != "openclaw@${OPENCLAW_PINNED_VERSION}" ]]; then
+  fail "expected pinned install spec openclaw@${OPENCLAW_PINNED_VERSION}, got: ${NPM_INSTALL_CAPTURED_SPEC:-<empty>}"
+fi
+
+pass "core install is pinned to ${OPENCLAW_PINNED_VERSION}"
+
+## ============================================================
+## Regression 5: root install should fallback to system service
 ## when systemctl --user bus is unavailable
 ## ============================================================
 
@@ -277,7 +298,7 @@ PATH="$ORIGINAL_PATH"
 pass "root install falls back to system-level systemd service when user bus is unavailable"
 
 ## ============================================================
-## Regression 5: root install in non-systemd environments
+## Regression 6: root install in non-systemd environments
 ## should use background-process fallback (no systemctl calls)
 ## ============================================================
 
@@ -325,7 +346,7 @@ fi
 pass "root install uses non-systemd background fallback when PID 1 is not systemd"
 
 ## ============================================================
-## Regression 6: npm metadata lookup failures should not block
+## Regression 7: npm metadata lookup failures should not block
 ## install flow before actual npm install
 ## ============================================================
 
@@ -361,8 +382,8 @@ if [[ "$INSTALL_NPM_CALLS" -lt 1 ]]; then
   fail "expected install_clawdbot_npm to be called"
 fi
 
-if [[ "$LAST_INSTALL_SPEC" != "openclaw@latest" ]]; then
-  fail "expected install spec openclaw@latest, got: ${LAST_INSTALL_SPEC:-<empty>}"
+if [[ "$LAST_INSTALL_SPEC" != "openclaw@${OPENCLAW_PINNED_VERSION}" ]]; then
+  fail "expected install spec openclaw@${OPENCLAW_PINNED_VERSION}, got: ${LAST_INSTALL_SPEC:-<empty>}"
 fi
 
 pass "install proceeds when npm metadata lookup is unavailable"

@@ -699,11 +699,15 @@ pick_tagline() {
 
 TAGLINE=$(pick_tagline)
 
+# Openclaw core version pinned by this installer.
+# This keeps installs reproducible and avoids surprises from upstream dist-tags.
+OPENCLAW_PINNED_VERSION="2026.2.3-1"
+
 NO_ONBOARD=${CLAWDBOT_NO_ONBOARD:-0}
 NO_PROMPT=${CLAWDBOT_NO_PROMPT:-0}
 DRY_RUN=${CLAWDBOT_DRY_RUN:-0}
 INSTALL_METHOD=${CLAWDBOT_INSTALL_METHOD:-}
-CLAWDBOT_VERSION=${CLAWDBOT_VERSION:-latest}
+CLAWDBOT_VERSION=${CLAWDBOT_VERSION:-$OPENCLAW_PINNED_VERSION}
 USE_BETA=${CLAWDBOT_BETA:-0}
 GIT_DIR_DEFAULT="${HOME}/openclaw"
 GIT_DIR=${CLAWDBOT_GIT_DIR:-$GIT_DIR_DEFAULT}
@@ -920,7 +924,7 @@ Usage:
 
 Actions:
   --install              Install Openclaw (default for pipe mode)
-  --upgrade              Upgrade Openclaw to latest version
+  --upgrade              Upgrade Openclaw (core pinned to ${OPENCLAW_PINNED_VERSION})
   --configure            Run configuration wizard
   --status               Show installation status
   --repair               Run repair/diagnostics menu
@@ -931,8 +935,8 @@ Install Options:
   --install-method, --method npm|git   Install via npm (default) or from a git checkout
   --npm                               Shortcut for --install-method npm
   --git, --github                     Shortcut for --install-method git
-  --version <version|dist-tag>         npm install: version (default: latest)
-  --beta                               Use beta if available, else latest
+  --version <version|dist-tag>         (ignored) Openclaw core is pinned to ${OPENCLAW_PINNED_VERSION}
+  --beta                               (ignored) Openclaw core is pinned to ${OPENCLAW_PINNED_VERSION}
   --git-dir, --dir <path>             Checkout directory (default: ~/openclaw)
   --no-git-update                      Skip git pull for existing checkout
 
@@ -973,8 +977,8 @@ Logging Options:
 Environment variables:
   CLAWDBOT_ACTION=install|upgrade|uninstall|configure|status|repair|menu
   CLAWDBOT_INSTALL_METHOD=git|npm
-  CLAWDBOT_VERSION=latest|next|<semver>
-  CLAWDBOT_BETA=0|1
+  CLAWDBOT_VERSION=<ignored> (Openclaw core is pinned to ${OPENCLAW_PINNED_VERSION})
+  CLAWDBOT_BETA=<ignored> (Openclaw core is pinned to ${OPENCLAW_PINNED_VERSION})
   CLAWDBOT_GIT_DIR=...
   CLAWDBOT_GIT_UPDATE=0|1
   CLAWDBOT_NO_PROMPT=1
@@ -2268,6 +2272,18 @@ resolve_beta_version() {
 install_clawdbot() {
     log info "Installing Openclaw via npm..."
     local package_name="${CLAWDBOT_NPM_PKG}"
+
+    # This installer pins the Openclaw core version. Ignore --version/--beta to
+    # keep installs reproducible and compatible with downstream plugins.
+    if [[ -n "${OPENCLAW_PINNED_VERSION:-}" ]]; then
+        if [[ "${USE_BETA}" == "1" || "${CLAWDBOT_VERSION}" != "${OPENCLAW_PINNED_VERSION}" ]]; then
+            echo -e "${WARN}→${NC} Openclaw 版本已固定为 ${INFO}${OPENCLAW_PINNED_VERSION}${NC}；忽略 --version/--beta。"
+            log info "Pinned Openclaw version: ${OPENCLAW_PINNED_VERSION}; ignoring version=${CLAWDBOT_VERSION}, beta=${USE_BETA}"
+        fi
+        USE_BETA=0
+        CLAWDBOT_VERSION="${OPENCLAW_PINNED_VERSION}"
+    fi
+
     if [[ "$USE_BETA" == "1" ]]; then
         local beta_version=""
         beta_version="$(resolve_beta_version || true)"
@@ -2420,6 +2436,62 @@ resolve_clawdbot_version() {
     echo "$version"
 }
 
+extract_gateway_status_json() {
+    local claw="$1"
+    if [[ -z "$claw" ]]; then
+        return 1
+    fi
+
+    local raw_output=""
+    raw_output="$("$claw" gateway status --json 2>/dev/null || true)"
+    if [[ -z "$raw_output" ]]; then
+        return 1
+    fi
+
+    # Some plugin implementations print log lines before JSON.
+    # Parse robustly and emit a compact JSON object for downstream checks.
+    printf '%s' "$raw_output" | node -e '
+const fs = require("fs");
+const raw = fs.readFileSync(0, "utf8");
+const trimmed = raw.trim();
+if (!trimmed) process.exit(1);
+
+const candidates = [];
+const seen = new Set();
+const add = (value) => {
+  const v = String(value || "").trim();
+  if (!v || seen.has(v)) return;
+  seen.add(v);
+  candidates.push(v);
+};
+
+add(trimmed);
+
+const lastJsonStart = trimmed.lastIndexOf("\n{");
+if (lastJsonStart >= 0) {
+  add(trimmed.slice(lastJsonStart + 1));
+}
+
+const firstBrace = trimmed.indexOf("{");
+const lastBrace = trimmed.lastIndexOf("}");
+if (firstBrace >= 0 && lastBrace > firstBrace) {
+  add(trimmed.slice(firstBrace, lastBrace + 1));
+}
+
+for (const candidate of candidates) {
+  try {
+    const parsed = JSON.parse(candidate);
+    process.stdout.write(JSON.stringify(parsed));
+    process.exit(0);
+  } catch {
+    // try next candidate
+  }
+}
+
+process.exit(1);
+' 2>/dev/null
+}
+
 is_gateway_daemon_loaded() {
     local claw="$1"
     if [[ -z "$claw" ]]; then
@@ -2427,7 +2499,7 @@ is_gateway_daemon_loaded() {
     fi
 
     local status_json=""
-    status_json="$("$claw" gateway status --json 2>/dev/null || true)"
+    status_json="$(extract_gateway_status_json "$claw" || true)"
     if [[ -z "$status_json" ]]; then
         return 1
     fi
@@ -2451,10 +2523,79 @@ try {
     return undefined;
   };
 
-  // Different Openclaw versions/OSes may emit different shapes. Try to infer "running" first,
-  // then fall back to "loaded" for backward compatibility.
   const svc = data?.service ?? data?.daemon ?? data?.gateway?.service ?? data?.gateway ?? {};
+  const runtime = svc?.runtime ?? data?.runtime ?? data?.service?.runtime ?? {};
+  const loaded = asBool(
+    svc?.loaded ??
+      svc?.isLoaded ??
+      runtime?.loaded ??
+      runtime?.isLoaded ??
+      data?.loaded ??
+      data?.serviceLoaded
+  );
+  process.exit(loaded ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+' >/dev/null 2>&1
+}
 
+is_gateway_running() {
+    local claw="$1"
+    if [[ -z "$claw" ]]; then
+        return 1
+    fi
+
+    local status_json=""
+    status_json="$(extract_gateway_status_json "$claw" || true)"
+    if [[ -z "$status_json" ]]; then
+        return 1
+    fi
+
+    printf '%s' "$status_json" | node -e '
+const fs = require("fs");
+const raw = fs.readFileSync(0, "utf8").trim();
+if (!raw) process.exit(1);
+try {
+  const data = JSON.parse(raw);
+  const asBool = (v) => {
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0;
+    if (typeof v === "string") {
+      const s = v.trim().toLowerCase();
+      if (["true", "yes", "y", "1", "running", "active", "started", "up", "ok", "healthy", "online"].includes(s)) return true;
+      if (["false", "no", "n", "0", "stopped", "inactive", "down", "failed", "error", "offline", "dead", "unknown"].includes(s)) return false;
+      if (s === "loaded") return true;
+      if (s === "unloaded") return false;
+    }
+    return undefined;
+  };
+  const asRunningState = (v) => {
+    const direct = asBool(v);
+    if (direct !== undefined) return direct;
+    if (typeof v !== "string") return undefined;
+    const s = v.trim().toLowerCase();
+    if (!s) return undefined;
+    if (s.includes("running") || s.includes("started") || s.includes("active")) return true;
+    if (s.includes("stopped") || s.includes("inactive") || s.includes("failed") || s.includes("dead")) return false;
+    return undefined;
+  };
+
+  const svc = data?.service ?? data?.daemon ?? data?.gateway?.service ?? data?.gateway ?? {};
+  const runtime = svc?.runtime ?? data?.runtime ?? data?.service?.runtime ?? {};
+
+  // Prefer explicit runtime state (newer Openclaw daemon status schema).
+  const runtimeRunning = asRunningState(
+    runtime?.running ??
+      runtime?.active ??
+      runtime?.isRunning ??
+      runtime?.status ??
+      runtime?.state ??
+      runtime?.subState
+  );
+  if (runtimeRunning !== undefined) process.exit(runtimeRunning ? 0 : 1);
+
+  // Backward-compatible running fields.
   const running = asBool(
     svc?.running ??
       svc?.active ??
@@ -2469,9 +2610,31 @@ try {
   );
   if (running !== undefined) process.exit(running ? 0 : 1);
 
-  const pid = svc?.pid ?? data?.pid ?? data?.service?.pid;
-  if (typeof pid === "number" && pid > 0) process.exit(0);
+  const pid = runtime?.pid ?? svc?.pid ?? data?.pid ?? data?.service?.pid;
+  if ((typeof pid === "number" && pid > 0) || (typeof pid === "string" && /^[0-9]+$/.test(pid) && Number(pid) > 0)) {
+    process.exit(0);
+  }
 
+  // daemon-cli status schema: rpc.ok says if local probe can talk to gateway.
+  const rpcOk = asBool(data?.rpc?.ok ?? data?.connect?.ok ?? data?.probe?.ok);
+  if (rpcOk !== undefined) process.exit(rpcOk ? 0 : 1);
+
+  // gateway probe schema: targets[].connect.ok and top-level ok.
+  if (Array.isArray(data?.targets)) {
+    const targetStates = data.targets
+      .map((t) => asBool(t?.connect?.ok ?? t?.probe?.ok ?? t?.ok))
+      .filter((v) => v !== undefined);
+    if (targetStates.length > 0) process.exit(targetStates.some(Boolean) ? 0 : 1);
+  }
+  const probeOk = asBool(data?.ok);
+  if (probeOk !== undefined) process.exit(probeOk ? 0 : 1);
+
+  // Port listener info from daemon-cli status.
+  const portStatus = String(data?.port?.status ?? "").trim().toLowerCase();
+  if (["busy", "listening", "open", "in_use", "in-use"].includes(portStatus)) process.exit(0);
+  if (["free", "closed"].includes(portStatus)) process.exit(1);
+
+  // Last fallback: service loaded (older behavior).
   const loaded = asBool(svc?.loaded ?? svc?.isLoaded ?? data?.loaded ?? data?.serviceLoaded);
   process.exit(loaded ? 0 : 1);
 } catch {
@@ -2633,7 +2796,7 @@ restart_gateway_if_running() {
         return 0
     fi
 
-    if ! is_gateway_daemon_loaded "$claw"; then
+    if ! is_gateway_running "$claw"; then
         return 0
     fi
 
@@ -3908,7 +4071,7 @@ run_status_flow() {
     local claw=""
     claw="$(resolve_clawdbot_bin || true)"
     if [[ -n "$claw" ]]; then
-        if is_gateway_daemon_loaded "$claw"; then
+        if is_gateway_running "$claw"; then
             echo -e "  ${MUTED}└─${NC} Gateway      ${SUCCESS}✓${NC} 运行中"
         else
             echo -e "  ${MUTED}└─${NC} Gateway      ${MUTED}○${NC} 未运行"
@@ -4432,43 +4595,22 @@ check_upgrade_available() {
 upgrade_clawdbot_core() {
     local current=""
     current="$(get_installed_version "openclaw")"
-    local latest=""
-    latest="$(get_latest_version "openclaw" "latest")"
+    local pinned="${OPENCLAW_PINNED_VERSION:-2026.2.3-1}"
 
     if [[ -z "$current" ]]; then
-        echo -e "${WARN}→${NC} Openclaw 未安装，执行安装..."
+        echo -e "${WARN}→${NC} Openclaw 未安装，执行安装 (固定版本: ${INFO}${pinned}${NC})..."
         install_clawdbot
         return $?
     fi
 
-    # If we can't get latest version from npm, skip comparison
-    if [[ -z "$latest" ]]; then
-        echo -e "${WARN}→${NC} 无法获取最新版本信息，尝试升级..."
-        spinner_start "升级 Openclaw..."
-        if install_clawdbot_npm "${CLAWDBOT_NPM_PKG}@latest" >/dev/null 2>&1; then
-            local new_version=""
-            new_version="$(get_installed_version "openclaw")"
-            spinner_stop 0 "Openclaw 已升级到 ${new_version:-latest}"
-            return 0
-        else
-            spinner_stop 1 "升级失败"
-            return 1
-        fi
-    fi
-
-    if [[ "$current" == "$latest" ]]; then
-        echo -e "${SUCCESS}✓${NC} Openclaw 已是最新版本 (${INFO}$current${NC})"
+    if [[ "$current" == "$pinned" ]]; then
+        echo -e "${SUCCESS}✓${NC} Openclaw 已是固定版本 (${INFO}$current${NC})"
         return 0
     fi
 
-    spinner_start "升级 Openclaw: $current → $latest"
-    if install_clawdbot_npm "${CLAWDBOT_NPM_PKG}@latest" >/dev/null 2>&1; then
-        spinner_stop 0 "Openclaw 已升级到 $latest"
-        return 0
-    else
-        spinner_stop 1 "升级失败"
-        return 1
-    fi
+    echo -e "${WARN}→${NC} Openclaw 当前版本 ${INFO}${current}${NC}，将切换到固定版本 ${INFO}${pinned}${NC}..."
+    install_clawdbot
+    return $?
 }
 
 upgrade_dingtalk_plugin() {
