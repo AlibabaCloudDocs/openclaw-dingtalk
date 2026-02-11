@@ -69,6 +69,28 @@ export const ConversationConfigSchema = z.object({
   mentionBypassUsers: z.array(z.string()).default([]),
   /** Isolate context per user in group chats (default: false) */
   isolateContextPerUserInGroup: z.boolean().default(false),
+  /** Per-sender rolling-window rate limit */
+  rateLimit: z
+    .object({
+      enabled: z.boolean().default(true),
+      windowSeconds: z.number().min(1).default(60),
+      maxRequests: z.number().min(0).default(8),
+      burst: z.number().min(0).default(3),
+      bypassUsers: z.array(z.string()).default([]),
+      replyOnLimit: z.boolean().default(true),
+      limitMessage: z
+        .string()
+        .default("请求太频繁，请稍后再试。"),
+    })
+    .default({
+      enabled: true,
+      windowSeconds: 60,
+      maxRequests: 8,
+      burst: 3,
+      bypassUsers: [],
+      replyOnLimit: true,
+      limitMessage: "请求太频繁，请稍后再试。",
+    }),
 });
 
 /**
@@ -262,6 +284,7 @@ export const DingTalkConfigSchema = z.object({
 export type DingTalkConfig = z.infer<typeof DingTalkConfigSchema>;
 export type CoalesceConfig = z.infer<typeof CoalesceConfigSchema>;
 export type AICardConfig = z.infer<typeof AICardConfigSchema>;
+export type RateLimitConfig = z.infer<typeof ConversationConfigSchema>["rateLimit"];
 
 /**
  * Default values for coalesce config

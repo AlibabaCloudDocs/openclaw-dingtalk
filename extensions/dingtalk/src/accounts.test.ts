@@ -50,6 +50,15 @@ describe("resolveDingTalkAccount", () => {
             requirePrefix: "#",
             mentionBypassUsers: ["admin-1"],
             isolateContextPerUserInGroup: true,
+            rateLimit: {
+              enabled: true,
+              windowSeconds: 30,
+              maxRequests: 5,
+              burst: 2,
+              bypassUsers: ["admin-1"],
+              replyOnLimit: false,
+              limitMessage: "too fast",
+            },
           },
           reply: {
             replyMode: "markdown",
@@ -90,6 +99,15 @@ describe("resolveDingTalkAccount", () => {
     expect(account.requirePrefix).toBe("#");
     expect(account.mentionBypassUsers).toEqual(["admin-1"]);
     expect(account.isolateContextPerUserInGroup).toBe(true);
+    expect(account.rateLimit).toEqual({
+      enabled: true,
+      windowSeconds: 30,
+      maxRequests: 5,
+      burst: 2,
+      bypassUsers: ["admin-1"],
+      replyOnLimit: false,
+      limitMessage: "too fast",
+    });
     expect(account.replyMode).toBe("markdown");
     expect(account.maxChars).toBe(2400);
     expect(account.tableMode).toBe("off");
@@ -108,6 +126,24 @@ describe("resolveDingTalkAccount", () => {
     expect(account.apiBase).toBe("https://api.example.com");
     expect(account.openPath).toBe("/gateway/open");
     expect(account.subscriptionsJson).toBe("{\"type\":\"test\"}");
+  });
+
+  it("uses rateLimit defaults when not configured", () => {
+    const cfg = {
+      channels: {
+        [DINGTALK_CHANNEL_ID]: {
+          clientId: "id",
+          clientSecret: "secret",
+        },
+      },
+    };
+    const account = resolveDingTalkAccount({ cfg });
+    expect(account.rateLimit.enabled).toBe(true);
+    expect(account.rateLimit.windowSeconds).toBe(60);
+    expect(account.rateLimit.maxRequests).toBe(8);
+    expect(account.rateLimit.burst).toBe(3);
+    expect(account.rateLimit.replyOnLimit).toBe(true);
+    expect(account.rateLimit.limitMessage).toBe("请求太频繁，请稍后再试。");
   });
 
   it("prefers grouped config over legacy flat fields when both exist", () => {

@@ -4,6 +4,7 @@ import {
   type CoalesceConfig,
   type AICardConfig,
   type DingTalkConfig,
+  type RateLimitConfig,
   DEFAULT_ACCOUNT_ID,
   DEFAULT_COALESCE,
   DINGTALK_CHANNEL_ID,
@@ -40,6 +41,7 @@ export type ResolvedDingTalkAccount = {
   requireMention: boolean;
   isolateContextPerUserInGroup: boolean;
   mentionBypassUsers: string[];
+  rateLimit: RateLimitConfig;
 
   // Response formatting
   responsePrefix?: string;
@@ -311,6 +313,52 @@ export function resolveDingTalkAccount(params: {
     pickStringArray(accountRecord, [["conversation", "mentionBypassUsers"], ["mentionBypassUsers"]]) ??
     pickStringArray(sectionRecord, [["conversation", "mentionBypassUsers"], ["mentionBypassUsers"]]) ??
     [];
+
+  const defaultRateLimit: RateLimitConfig = {
+    enabled: true,
+    windowSeconds: 60,
+    maxRequests: 8,
+    burst: 3,
+    bypassUsers: [],
+    replyOnLimit: true,
+    limitMessage: "请求太频繁，请稍后再试。",
+  };
+  const baseRateLimit = pickRecord(sectionRecord, [["conversation", "rateLimit"]]);
+  const accountRateLimit = pickRecord(accountRecord, [["conversation", "rateLimit"]]);
+  const rateLimit: RateLimitConfig = {
+    enabled:
+      (typeof accountRateLimit?.enabled === "boolean" ? accountRateLimit.enabled : undefined) ??
+      (typeof baseRateLimit?.enabled === "boolean" ? baseRateLimit.enabled : undefined) ??
+      defaultRateLimit.enabled,
+    windowSeconds:
+      (typeof accountRateLimit?.windowSeconds === "number" ? accountRateLimit.windowSeconds : undefined) ??
+      (typeof baseRateLimit?.windowSeconds === "number" ? baseRateLimit.windowSeconds : undefined) ??
+      defaultRateLimit.windowSeconds,
+    maxRequests:
+      (typeof accountRateLimit?.maxRequests === "number" ? accountRateLimit.maxRequests : undefined) ??
+      (typeof baseRateLimit?.maxRequests === "number" ? baseRateLimit.maxRequests : undefined) ??
+      defaultRateLimit.maxRequests,
+    burst:
+      (typeof accountRateLimit?.burst === "number" ? accountRateLimit.burst : undefined) ??
+      (typeof baseRateLimit?.burst === "number" ? baseRateLimit.burst : undefined) ??
+      defaultRateLimit.burst,
+    bypassUsers:
+      (Array.isArray(accountRateLimit?.bypassUsers)
+        ? accountRateLimit?.bypassUsers.filter((v: unknown): v is string => typeof v === "string")
+        : undefined) ??
+      (Array.isArray(baseRateLimit?.bypassUsers)
+        ? baseRateLimit?.bypassUsers.filter((v: unknown): v is string => typeof v === "string")
+        : undefined) ??
+      defaultRateLimit.bypassUsers,
+    replyOnLimit:
+      (typeof accountRateLimit?.replyOnLimit === "boolean" ? accountRateLimit.replyOnLimit : undefined) ??
+      (typeof baseRateLimit?.replyOnLimit === "boolean" ? baseRateLimit.replyOnLimit : undefined) ??
+      defaultRateLimit.replyOnLimit,
+    limitMessage:
+      (typeof accountRateLimit?.limitMessage === "string" ? accountRateLimit.limitMessage : undefined) ??
+      (typeof baseRateLimit?.limitMessage === "string" ? baseRateLimit.limitMessage : undefined) ??
+      defaultRateLimit.limitMessage,
+  };
   const responsePrefix =
     pickString(accountRecord, [["reply", "responsePrefix"], ["responsePrefix"]]) ??
     pickString(sectionRecord, [["reply", "responsePrefix"], ["responsePrefix"]]);
@@ -391,6 +439,7 @@ export function resolveDingTalkAccount(params: {
     requireMention,
     isolateContextPerUserInGroup,
     mentionBypassUsers,
+    rateLimit,
     responsePrefix,
     showToolStatus,
     showToolResult,

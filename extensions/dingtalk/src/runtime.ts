@@ -41,6 +41,27 @@ export type CardStreamState = {
 };
 
 const cardStreamCache = new Map<string, CardStreamState>();
+const CARD_STREAM_CACHE_MAX = 5_000;
+const CARD_STREAM_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const CARD_STREAM_CACHE_SWEEP_EVERY = 200;
+let cardStreamOps = 0;
+
+function sweepCardStreamCache(nowMs: number = Date.now()): void {
+  // TTL is based on lastUpdateAt (streaming heartbeat). If a state is stuck and never finalized,
+  // we still cap retention to avoid unbounded growth.
+  for (const [key, state] of cardStreamCache.entries()) {
+    const last = typeof state.lastUpdateAt === "number" ? state.lastUpdateAt : 0;
+    if (last && nowMs - last > CARD_STREAM_CACHE_TTL_MS) {
+      cardStreamCache.delete(key);
+    }
+  }
+
+  while (cardStreamCache.size > CARD_STREAM_CACHE_MAX) {
+    const first = cardStreamCache.keys().next().value as string | undefined;
+    if (!first) break;
+    cardStreamCache.delete(first);
+  }
+}
 
 /**
  * Get or create a token manager for a DingTalk account.
@@ -85,11 +106,22 @@ export function clearTokenManagers(): void {
 }
 
 export function getCardStreamState(sessionKey: string): CardStreamState | undefined {
+  cardStreamOps += 1;
+  if (cardStreamOps % CARD_STREAM_CACHE_SWEEP_EVERY === 0) {
+    sweepCardStreamCache();
+  }
   return cardStreamCache.get(sessionKey);
 }
 
 export function setCardStreamState(sessionKey: string, state: CardStreamState): void {
+  cardStreamOps += 1;
   cardStreamCache.set(sessionKey, state);
+  if (
+    cardStreamOps % CARD_STREAM_CACHE_SWEEP_EVERY === 0 ||
+    cardStreamCache.size > CARD_STREAM_CACHE_MAX
+  ) {
+    sweepCardStreamCache();
+  }
 }
 
 export function clearCardStreamState(sessionKey: string): void {
@@ -98,4 +130,5 @@ export function clearCardStreamState(sessionKey: string): void {
 
 export function clearCardStreamStates(): void {
   cardStreamCache.clear();
+  cardStreamOps = 0;
 }

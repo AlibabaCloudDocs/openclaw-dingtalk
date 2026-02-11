@@ -43,6 +43,15 @@ describe.skipIf(!hasCredentials)("sendProactiveMessage integration", () => {
       showToolStatus: false,
       showToolResult: false,
       thinking: "off",
+      rateLimit: {
+        enabled: true,
+        windowSeconds: 60,
+        maxRequests: 8,
+        burst: 3,
+        bypassUsers: [],
+        replyOnLimit: true,
+        limitMessage: "请求太频繁，请稍后再试。",
+      },
     };
   });
 

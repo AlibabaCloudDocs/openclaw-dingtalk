@@ -37,6 +37,8 @@ import { parseMediaProtocol, hasMediaTags, replaceMediaTags } from "./media-prot
 import { processMediaItems, uploadMediaItem } from "./send/media-sender.js";
 import { DEFAULT_DINGTALK_SYSTEM_PROMPT, buildSenderContext } from "./system-prompt.js";
 import type { DingTalkAICard } from "./types/channel-data.js";
+import { TtlSet } from "./util/ttl-set.js";
+import { RollingWindowRateLimiter } from "./util/rate-limit.js";
 import {
   buildCardDataFromText,
   buildFinishedCardData,
@@ -72,10 +74,12 @@ function deriveProvider(model: string | undefined): string | undefined {
 
 type VerboseOverride = "off" | "on" | "full";
 
-const ALLOWED_COMMAND_RE = /(?:^|\s)\/(new|think|thinking|reasoning|reason|model|models|verbose|v)(?=$|\s|:)/i;
+const ALLOWED_COMMAND_RE = /(?:^|\s)\/(new|think|thinking|reasoning|reason|model|models|verbose|v|help|status)(?=$|\s|:)/i;
 const VERBOSE_COMMAND_RE = /(?:^|\s)\/(verbose|v)(?=$|\s|:)/i;
 const RESET_COMMAND_RE = /(?:^|\s)\/new(?=$|\s|:)/i;
 const BARE_NEW_COMMAND_RE = /^\/new$/i;
+const HELP_COMMAND_RE = /(?:^|\s)\/help(?=$|\s|:)/i;
+const STATUS_COMMAND_RE = /(?:^|\s)\/status(?=$|\s|:)/i;
 const DINGTALK_BARE_NEW_PROMPT_ZH =
   "你正在开始一个新会话。请使用中文打招呼并保持 1-3 句，询问用户接下来想做什么；如果当前运行模型与 system prompt 里的 default_model 不同，请顺带说明默认模型。不要提及内部步骤、文件、工具或推理。";
 
@@ -456,6 +460,14 @@ export async function monitorDingTalkProvider(
   const { account, config, abortSignal, log, statusSink } = opts;
   const runtime = getDingTalkRuntime();
   const dispatchConfig = ensureDingTalkStreamingConfig(config);
+  const messageDeduper = new TtlSet({ ttlMs: 10 * 60 * 1000, maxSize: 50_000, sweepEvery: 200 });
+  const rateLimiter = new RollingWindowRateLimiter({
+    windowMs: Math.max(1, account.rateLimit?.windowSeconds ?? 60) * 1000,
+    maxRequests: account.rateLimit?.maxRequests ?? 8,
+    burst: account.rateLimit?.burst ?? 3,
+    maxKeys: 20_000,
+    sweepEvery: 200,
+  });
 
   // Parse custom subscriptions if provided
   let subscriptionsBody: Record<string, unknown> | null = null;
@@ -1103,6 +1115,19 @@ export async function monitorDingTalkProvider(
       return;
     }
 
+    // Best-effort dedup: avoid double-processing when DingTalk redelivers on reconnect.
+    if (messageDeduper.seen(chat.messageId)) {
+      log?.info?.(
+        {
+          messageId: chat.messageId,
+          senderId: chat.senderId,
+          conversationId: chat.conversationId,
+        },
+        "Duplicate DingTalk message ignored"
+      );
+      return;
+    }
+
     // Filter: allowlist
     if (account.allowFrom.length > 0 && chat.senderId) {
       if (!account.allowFrom.includes(chat.senderId)) {
@@ -1135,6 +1160,34 @@ export async function monitorDingTalkProvider(
     });
     const commandAuthorized = opts.forceCommandAuthorized ?? hasAllowedCommandToken(textForAgent);
 
+    // Per-sender rate limit (after trigger filters).
+    const rl = account.rateLimit;
+    if (rl?.enabled && chat.senderId?.trim() && !rl.bypassUsers.includes(chat.senderId)) {
+      const allowed = rateLimiter.allow(chat.senderId);
+      if (!allowed) {
+        log?.info?.(
+          {
+            senderId: chat.senderId,
+            conversationId: chat.conversationId,
+            chatType: chat.chatType,
+            sessionKey,
+            windowSeconds: rl.windowSeconds,
+            maxRequests: rl.maxRequests,
+            burst: rl.burst,
+          },
+          "Rate limit exceeded"
+        );
+        if (rl.replyOnLimit && chat.sessionWebhook?.trim()) {
+          await sendReplyViaSessionWebhook(chat.sessionWebhook, rl.limitMessage, {
+            replyMode: "text",
+            maxChars: account.maxChars,
+            logger: log,
+          });
+        }
+        return;
+      }
+    }
+
     if (RESET_COMMAND_RE.test(textForAgent)) {
       verboseOverrides.delete(sessionKey);
       thinkingLevels.delete(sessionKey);
@@ -1150,6 +1203,79 @@ export async function monitorDingTalkProvider(
         : verboseOverrides.has(sessionKey)
           ? true
           : account.showToolStatus || account.showToolResult;
+
+    if (HELP_COMMAND_RE.test(textForAgent)) {
+      const helpText = [
+        "可用命令:",
+        "/new  重置会话上下文",
+        "/think off|minimal|low|medium|high|on  设置本会话思考级别",
+        "/t! off|minimal|low|medium|high|on <消息>  单次思考(不持久化)",
+        "/reasoning on|off|stream  控制推理展示",
+        "/model <provider/model>  切换模型",
+        "/models [provider]  列出可用模型",
+        "/verbose on|off|full  控制过程输出(工具/分块)",
+        "/help  显示本帮助",
+        "/status  显示本会话状态",
+        "",
+        "提示:",
+        account.requirePrefix
+          ? `- 群聊需要以触发前缀开头: ${account.requirePrefix}`
+          : account.requireMention
+            ? "- 群聊默认需要 @机器人 才会响应"
+            : "- 群聊无需 @机器人",
+      ].join("\n");
+
+      await sendReplyViaSessionWebhook(chat.sessionWebhook, helpText, {
+        replyMode: "text",
+        maxChars: account.maxChars,
+        logger: log,
+      });
+      return;
+    }
+
+    if (STATUS_COMMAND_RE.test(textForAgent)) {
+      const verbose = verboseOverrides.get(sessionKey) ?? "default";
+      const thinking = thinkingLevels.get(sessionKey) ?? "off";
+      const allowFromSummary =
+        account.allowFrom.length > 0 ? `${account.allowFrom.length} users` : "all";
+      const rateLimitSummary = rl?.enabled
+        ? `on (${rl.maxRequests}+${rl.burst}/${rl.windowSeconds}s)`
+        : "off";
+
+      const statusText = [
+        "会话状态:",
+        `- accountId: ${account.accountId}${account.name ? ` (${account.name})` : ""}`,
+        `- chatType: ${isGroup ? "group" : "direct"}`,
+        `- conversationId: ${chat.conversationId || "-"}`,
+        `- senderId: ${chat.senderId || "-"}`,
+        `- sessionKey: ${sessionKey}`,
+        "",
+        "触发与权限:",
+        `- allowFrom: ${allowFromSummary}`,
+        `- requirePrefix: ${account.requirePrefix ?? "off"}`,
+        `- requireMention: ${account.requireMention ? "on" : "off"}`,
+        "",
+        "回复与流式:",
+        `- replyMode: ${account.replyMode}`,
+        `- maxChars: ${account.maxChars}`,
+        `- tableMode: ${account.tableMode}`,
+        `- blockStreaming: ${account.blockStreaming ? "on" : "off"}`,
+        `- streamBlockTextToSession: ${account.streamBlockTextToSession ? "on" : "off"}`,
+        "",
+        "会话开关:",
+        `- verboseOverride: ${verbose} (allowNonFinal=${allowNonFinal ? "on" : "off"})`,
+        `- thinkingLevel: ${thinking}`,
+        `- aiCard: ${account.aiCard.enabled ? "on" : "off"}${account.aiCard.templateId ? ` (templateId=${account.aiCard.templateId})` : ""}`,
+        `- rateLimit: ${rateLimitSummary}`,
+      ].join("\n");
+
+      await sendReplyViaSessionWebhook(chat.sessionWebhook, statusText, {
+        replyMode: "text",
+        maxChars: account.maxChars,
+        logger: log,
+      });
+      return;
+    }
     // Initialized early for fallback helpers, but reset again when the queued work actually starts.
     let runStartedAt = Date.now();
     const aiCardAutoReplyEnabled =

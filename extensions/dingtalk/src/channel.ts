@@ -135,6 +135,18 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
             requirePrefix: { type: "string" },
             mentionBypassUsers: { type: "array", items: { type: "string" } },
             isolateContextPerUserInGroup: { type: "boolean", default: false },
+            rateLimit: {
+              type: "object",
+              properties: {
+                enabled: { type: "boolean", default: true },
+                windowSeconds: { type: "number", minimum: 1, default: 60 },
+                maxRequests: { type: "number", minimum: 0, default: 8 },
+                burst: { type: "number", minimum: 0, default: 3 },
+                bypassUsers: { type: "array", items: { type: "string" }, default: [] },
+                replyOnLimit: { type: "boolean", default: true },
+                limitMessage: { type: "string", default: "请求太频繁，请稍后再试。" },
+              },
+            },
           },
         },
         reply: {
@@ -309,6 +321,54 @@ export const dingtalkPlugin: ChannelPlugin<ResolvedDingTalkAccount> = {
         help: "开启后同一群内每个用户拥有独立会话上下文。",
         advanced: true,
         order: 50,
+      },
+      "conversation.rateLimit": {
+        label: "消息限流（防刷屏）",
+        help: "按发送者做滚动窗口限流，避免群聊刷屏或误触导致的高频调用。",
+        advanced: true,
+        order: 60,
+      },
+      "conversation.rateLimit.enabled": {
+        label: "启用限流",
+        help: "开启后，超过阈值会直接拒绝并可选返回提示，不会触发模型/工具调用。",
+        advanced: true,
+        order: 61,
+      },
+      "conversation.rateLimit.windowSeconds": {
+        label: "统计窗口（秒）",
+        help: "在最近 windowSeconds 秒内统计触发次数。",
+        advanced: true,
+        order: 62,
+      },
+      "conversation.rateLimit.maxRequests": {
+        label: "窗口内最大请求数",
+        help: "基础阈值。实际允许次数为 maxRequests + burst。",
+        advanced: true,
+        order: 63,
+      },
+      "conversation.rateLimit.burst": {
+        label: "突发余量（burst）",
+        help: "允许在窗口内额外通过的请求数（与 maxRequests 相加）。",
+        advanced: true,
+        order: 64,
+      },
+      "conversation.rateLimit.bypassUsers": {
+        label: "限流豁免用户",
+        help: "这些用户不受限流影响（按 senderId 匹配）。",
+        advanced: true,
+        order: 65,
+      },
+      "conversation.rateLimit.replyOnLimit": {
+        label: "触发限流时回复提示",
+        help: "关闭后限流只会静默丢弃，不会发送提示。",
+        advanced: true,
+        order: 66,
+      },
+      "conversation.rateLimit.limitMessage": {
+        label: "限流提示文案",
+        help: "触发限流时返回给用户的简短提示。",
+        advanced: true,
+        order: 67,
       },
       aliyunMcp: {
         order: 35,

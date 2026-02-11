@@ -155,12 +155,13 @@ describe("monitorDingTalkProvider", () => {
     senderId: string;
     conversationType: string;
     conversationId: string;
+    messageId: string;
   }> = {}) => ({
     type: "CALLBACK",
     headers: {
       topic: "/v1.0/im/bot/messages/get",
       eventType: "CHATBOT_MESSAGE",
-      messageId: `msg-${Date.now()}`,
+      messageId: overrides.messageId ?? `msg-${Date.now()}`,
     },
     data: JSON.stringify({
       text: { content: overrides.text ?? "Hello bot" },
@@ -703,6 +704,87 @@ describe("monitorDingTalkProvider", () => {
       await new Promise((r) => setTimeout(r, 50));
 
       expect(runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalled();
+    }
+  });
+
+  it("handles /help locally without dispatching to runtime", async () => {
+    const runtime = getDingTalkRuntime();
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    if (capturedCallback) {
+      await capturedCallback(createMockMessage({ text: "/help", messageId: "help-1" }));
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalled();
+    }
+  });
+
+  it("handles /status locally without dispatching to runtime", async () => {
+    const runtime = getDingTalkRuntime();
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    if (capturedCallback) {
+      await capturedCallback(createMockMessage({ text: "/status", messageId: "status-1" }));
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalled();
+    }
+  });
+
+  it("deduplicates identical messageId to avoid double dispatch", async () => {
+    const runtime = getDingTalkRuntime();
+
+    await monitorDingTalkProvider({
+      account: BASIC_ACCOUNT,
+      config: mockConfig,
+    });
+
+    if (capturedCallback) {
+      const msg = createMockMessage({ text: "Hello", messageId: "dup-1" });
+      await capturedCallback(msg);
+      await capturedCallback(msg);
+      await new Promise((r) => setTimeout(r, 80));
+
+      expect(runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("rate limits when configured and replies with limit message", async () => {
+    const runtime = getDingTalkRuntime();
+    const limitedAccount = {
+      ...BASIC_ACCOUNT,
+      rateLimit: {
+        ...BASIC_ACCOUNT.rateLimit,
+        enabled: true,
+        windowSeconds: 60,
+        maxRequests: 0,
+        burst: 0,
+        replyOnLimit: true,
+        limitMessage: "limited",
+      },
+    };
+
+    await monitorDingTalkProvider({
+      account: limitedAccount,
+      config: mockConfig,
+    });
+
+    if (capturedCallback) {
+      await capturedCallback(createMockMessage({ text: "Hello", messageId: "rl-1" }));
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalled();
     }
   });
 
