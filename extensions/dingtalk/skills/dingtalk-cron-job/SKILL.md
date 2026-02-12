@@ -44,6 +44,21 @@ openclaw cron add \
 | `--to` | 单聊用 senderStaffId；群聊用 `dingtalk:group:<cid...>` | 群提醒见下方说明 |
 | `--delete-after-run` | 一次性提醒建议加 | 避免执行后残留任务 |
 
+## 命令白名单（严格使用）
+
+只允许使用以下命令做验证/排障，禁止自造变体：
+
+```bash
+openclaw cron run <job-id> --force --expect-final
+openclaw cron runs --id <job-id> --limit 5
+openclaw cron rm <job-id>
+```
+
+说明：
+- `cron run` 只接受位置参数 `<job-id>`，不要写 `--id`
+- `cron runs` 必须写 `--id`
+- `--expect-final` 用于等待最终回复，避免“看起来成功但无最终输出”
+
 ## 群聊提醒（本群/提醒所有人）
 
 当用户说“在群里提醒大家/提醒本群”时，用群目标而不是用户 staffId：
@@ -168,14 +183,44 @@ openclaw cron add \
 - [ ] `--channel` 是 `clawdbot-dingtalk`
 - [ ] `--to` 是正确的 senderStaffId
 
-## 调试命令
+## 创建后最小验收（必须执行）
+
+创建任务成功后，必须立刻做两步验收：
+
+1. 强制触发一次并等待最终输出
+
+```bash
+openclaw cron run <job-id> --force --expect-final
+```
+
+2. 查看最近运行记录（确认 run log 已写入）
+
+```bash
+openclaw cron runs --id <job-id> --limit 5
+```
+
+若两步任一步失败，不要宣称“已稳定定时发送”。必须明确告知用户当前仅完成“任务创建”，调度执行仍待确认。
+
+## 失败告警模板（固定句式）
+
+当最小验收失败时，直接使用类似以下文案：
+
+> 已完成任务创建，但本次强制触发/运行记录校验未通过。  
+> 这通常表示调度器尚未实际执行。  
+> 我已给出可复现命令：`openclaw cron run <job-id> --force --expect-final` 和 `openclaw cron runs --id <job-id> --limit 5`。  
+> 在看到有效 run 记录前，不应视为“已稳定定时发送”。
+
+## 调试命令（仅限白名单）
 
 ```bash
 # 查看所有任务
 openclaw cron list
 
-# 立即测试任务
-openclaw cron run <job-id>
+# 立即测试任务（强制 + 等待 final）
+openclaw cron run <job-id> --force --expect-final
+
+# 查看运行记录
+openclaw cron runs --id <job-id> --limit 5
 
 # 删除任务
 openclaw cron rm <job-id>

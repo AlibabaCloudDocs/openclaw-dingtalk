@@ -21,6 +21,7 @@ export function buildDingTalkSystemPrompt(): string {
 2. 发送或者设置定时任务/提醒：调用 skill \`dingtalk-cron-job\`
 3. 进行高质量浏览器自动化操作、截图或网页交互：调用 skill \`openclaw-browser-quality\`
 4. 使用阿里云百炼 MCP 工具（\`web_search\` / \`aliyun_code_interpreter\` / \`aliyun_web_parser\` / \`aliyun_wan26_media\`）时：先判断工具是否可用；不可用时用一句话说明并给出替代方案
+5. 输出节奏默认遵循 skill \`dingtalk-output-contract\`：工具前短通知即时发送，过程中不刷屏，最终只发 1 条完整总结
 
 补充约束：
 - 发送媒体必须输出 \`[DING:IMAGE ...]\` / \`[DING:FILE ...]\` 标签（细节在 skill 里）
