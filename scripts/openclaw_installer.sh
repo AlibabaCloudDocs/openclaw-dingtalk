@@ -3840,12 +3840,15 @@ ensure_openclaw_plugin_load_path_from_npm_global() {
     local pkg="$1"
     local cfg="${CONFIG_FILE:-$HOME/.openclaw/openclaw.json}"
 
-    if [[ -z "$pkg" || ! -f "$cfg" ]]; then
+    if [[ -z "$pkg" ]]; then
         return 1
     fi
     if ! command -v npm &>/dev/null || ! command -v node &>/dev/null; then
         return 1
     fi
+
+    local cfg_dir="${cfg%/*}"
+    mkdir -p "$cfg_dir" || return 1
 
     local npm_root=""
     npm_root="$(npm root -g 2>/dev/null || true)"
@@ -3868,7 +3871,11 @@ const pluginDir = String(process.env.PLUGIN_DIR || "").trim();
 if (!cfgPath || !pkg || !pluginDir) process.exit(1);
 
 let cfg;
-try { cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8")); } catch { process.exit(2); }
+try { cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8")); } catch { cfg = {}; }
+
+if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+  cfg = {};
+}
 
 cfg.plugins ||= {};
 cfg.plugins.load ||= {};

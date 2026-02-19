@@ -1453,9 +1453,11 @@ export async function monitorDingTalkProvider(
       finalTextDelivered: false,
       synthesizedFinalSent: false,
       streamedBlockText: false,
-      pendingToolPreludeText: "",
-      toolPreludeDelivered: false,
-      deliveredToolPreludeText: undefined as string | undefined,
+      preludeWindowBlockCount: 0,
+      pendingToolPreludeDraft: "",
+      pendingToolPreludeQueue: [] as string[],
+      deliveredToolPreludeTexts: [] as string[],
+      lastPreludeNormalized: undefined as string | undefined,
     };
     const mergeBufferedBlockText = (previous: string, next: string): string => {
       if (!next) return previous;
@@ -1501,66 +1503,144 @@ export async function monitorDingTalkProvider(
       }
     };
     const rememberToolPreludeCandidate = (text?: string): void => {
-      if (blockTextBufferState.toolPreludeDelivered) {
-        return;
-      }
       const normalized = normalizeSilentFallbackText(text);
       if (!normalized) {
         return;
       }
-      const merged = mergeBufferedBlockText(blockTextBufferState.pendingToolPreludeText, normalized);
+
+      blockTextBufferState.preludeWindowBlockCount += 1;
+      const merged = mergeBufferedBlockText(blockTextBufferState.pendingToolPreludeDraft, normalized);
       // Tool prelude should stay short; long multi-line content likely belongs to the final answer.
       if (merged.length > TOOL_PRELUDE_MAX_CHARS || merged.split("\n").length > TOOL_PRELUDE_MAX_LINES) {
+        blockTextBufferState.pendingToolPreludeDraft = "";
         return;
       }
-      blockTextBufferState.pendingToolPreludeText = merged;
-    };
-    const takeToolPreludeCandidate = (): string | undefined => {
-      if (blockTextBufferState.toolPreludeDelivered) {
-        return undefined;
-      }
-      const normalized = normalizeSilentFallbackText(blockTextBufferState.pendingToolPreludeText);
-      if (!normalized) {
-        return undefined;
-      }
-      blockTextBufferState.pendingToolPreludeText = "";
-      blockTextBufferState.toolPreludeDelivered = true;
-      return normalized;
-    };
-    const maybeTakeToolPreludeCandidateFromBlock = (text?: string): string | undefined => {
-      if (blockTextBufferState.toolPreludeDelivered) {
-        return undefined;
-      }
-      const strictMatched = isLikelyToolPreludeText(text);
-      const looseFirstBlockMatched =
+      blockTextBufferState.pendingToolPreludeDraft = merged;
+
+      const strictMatched = isLikelyToolPreludeText(merged);
+      const looseWindowFirstBlockMatched =
         !strictMatched &&
-        blockTextBufferState.blockTextCount === 1 &&
-        isLikelyFirstBlockLooseToolPrelude(text);
-      if (!strictMatched && !looseFirstBlockMatched) {
-        return undefined;
+        blockTextBufferState.preludeWindowBlockCount === 1 &&
+        isLikelyFirstBlockLooseToolPrelude(merged);
+      if (!strictMatched && !looseWindowFirstBlockMatched) {
+        return;
       }
-      const taken = takeToolPreludeCandidate();
-      if (taken) {
-        log?.debug?.(
-          {
-            sessionKey,
-            path: strictMatched ? "strict_match" : "loose_first_block",
-            textSample: taken.slice(0, 120),
-          },
-          "Tool prelude candidate selected from block"
-        );
+
+      const candidate = merged;
+      if (blockTextBufferState.lastPreludeNormalized) {
+        const previous = blockTextBufferState.lastPreludeNormalized;
+        if (
+          candidate === previous ||
+          candidate.startsWith(previous) ||
+          previous.startsWith(candidate)
+        ) {
+          blockTextBufferState.pendingToolPreludeDraft = "";
+          return;
+        }
       }
-      return taken;
+
+      const queue = blockTextBufferState.pendingToolPreludeQueue;
+      const queueLast = queue[queue.length - 1];
+      if (queueLast) {
+        if (queueLast === candidate) {
+          blockTextBufferState.pendingToolPreludeDraft = "";
+          return;
+        }
+        if (candidate.startsWith(queueLast) || queueLast.startsWith(candidate)) {
+          queue[queue.length - 1] =
+            candidate.length >= queueLast.length ? candidate : queueLast;
+        } else {
+          queue.push(candidate);
+        }
+      } else {
+        queue.push(candidate);
+      }
+
+      blockTextBufferState.lastPreludeNormalized = candidate;
+      blockTextBufferState.pendingToolPreludeDraft = "";
+      log?.debug?.(
+        {
+          sessionKey,
+          path: strictMatched ? "strict_match" : "loose_first_block",
+          queueSize: blockTextBufferState.pendingToolPreludeQueue.length,
+          textSample: candidate.slice(0, 120),
+        },
+        "Queued tool prelude candidate from block"
+      );
     };
-    const trimDeliveredPreludeFromReply = (text?: string): string | undefined => {
+    const flushPendingToolPreludeQueue = async (reason: "tool_event"): Promise<void> => {
+      const queue = [...blockTextBufferState.pendingToolPreludeQueue];
+      const queueSize = queue.length;
+      blockTextBufferState.pendingToolPreludeQueue = [];
+      blockTextBufferState.pendingToolPreludeDraft = "";
+      blockTextBufferState.lastPreludeNormalized = undefined;
+      blockTextBufferState.preludeWindowBlockCount = 0;
+      if (!queueSize) {
+        return;
+      }
+
+      let flushedCount = 0;
+      for (const preludeText of queue) {
+        const textReplyResult = await sendReplyViaSessionWebhook(chat.sessionWebhook, preludeText, {
+          replyMode: account.replyMode,
+          maxChars: account.maxChars,
+          tableMode: account.tableMode,
+          logger: log,
+        });
+        if (textReplyResult.ok) {
+          blockTextBufferState.deliveredToolPreludeTexts.push(preludeText);
+          flushedCount += 1;
+          markDelivered("tool_prelude_flush");
+        } else {
+          log?.warn?.(
+            {
+              sessionKey,
+              reason: textReplyResult.reason,
+              status: textReplyResult.status,
+              textSample: preludeText.slice(0, 120),
+            },
+            "Tool prelude flush send failed"
+          );
+        }
+      }
+
+      log?.debug?.(
+        {
+          sessionKey,
+          prelude_flush_reason: reason,
+          prelude_queue_size_before_flush: queueSize,
+          prelude_flush_count: flushedCount,
+        },
+        "Flushed queued tool preludes"
+      );
+    };
+    const trimDeliveredPreludeFromReply = (
+      text?: string
+    ): { text?: string; trimmedCount: number } => {
       if (!text?.trim()) {
-        return undefined;
+        return { text: undefined, trimmedCount: 0 };
       }
-      const deliveredPrelude = normalizeSilentFallbackText(blockTextBufferState.deliveredToolPreludeText);
-      if (!deliveredPrelude) {
-        return text;
+
+      let trimmed = text;
+      let trimmedCount = 0;
+      for (const deliveredPreludeRaw of blockTextBufferState.deliveredToolPreludeTexts) {
+        if (!trimmed?.trim()) {
+          break;
+        }
+        const deliveredPrelude = normalizeSilentFallbackText(deliveredPreludeRaw);
+        if (!deliveredPrelude) {
+          continue;
+        }
+        const next = trimLeadingPreludeText(trimmed, deliveredPrelude);
+        if (next !== trimmed) {
+          trimmed = next ?? "";
+          trimmedCount += 1;
+        }
       }
-      return trimLeadingPreludeText(text, deliveredPrelude);
+      return {
+        text: trimmed.trim() ? trimmed : undefined,
+        trimmedCount,
+      };
     };
     const maybeSendBufferedBlockTextFinal = async (
       dispatchResult: unknown,
@@ -1625,9 +1705,10 @@ export async function monitorDingTalkProvider(
           "Synthetic final source decision"
         );
       }
-      const text = synthesizedSource.trim()
+      const trimmedFinal = synthesizedSource.trim()
         ? trimDeliveredPreludeFromReply(synthesizedSource)
-        : undefined;
+        : { text: undefined, trimmedCount: 0 };
+      const text = trimmedFinal.text;
       if (!text) {
         return;
       }
@@ -1651,6 +1732,7 @@ export async function monitorDingTalkProvider(
           sessionKey,
           syntheticSourceMode,
           syntheticSourceDecision,
+          final_trimmed_preludes_count: trimmedFinal.trimmedCount,
           counts: hasCounts
             ? {
                 block: countsRaw?.block,
@@ -1902,26 +1984,11 @@ export async function monitorDingTalkProvider(
           rememberToolPreludeCandidate(payload.text);
         }
 
-        const toolPreludeText =
-          info.kind === "tool"
-            ? (() => {
-                const taken = takeToolPreludeCandidate();
-                if (taken) {
-                  log?.debug?.(
-                    {
-                      sessionKey,
-                      path: "tool_event_trigger",
-                      textSample: taken.slice(0, 120),
-                    },
-                    "Tool prelude candidate selected from tool event"
-                  );
-                }
-                return taken;
-              })()
-            : info.kind === "block"
-              ? maybeTakeToolPreludeCandidateFromBlock(payload.text)
-              : undefined;
-        const effectivePayloadText = toolPreludeText ?? payload.text;
+        if (info.kind === "tool") {
+          await flushPendingToolPreludeQueue("tool_event");
+        }
+
+        const effectivePayloadText = payload.text;
         const isBlockWithText = info.kind === "block" && !!effectivePayloadText?.trim();
         const hasInlineMediaProtocol = !!effectivePayloadText && hasMediaTags(effectivePayloadText);
 
@@ -1936,7 +2003,7 @@ export async function monitorDingTalkProvider(
 
         const allowBlockText =
           isBlockWithText && account.streamBlockTextToSession && allowFullNonFinal;
-        const allowToolText = Boolean(toolPreludeText?.trim()) || (info.kind === "tool" && allowFullNonFinal);
+        const allowToolText = info.kind === "tool" && allowFullNonFinal;
         const allowText =
           info.kind === "final" ||
           allowBlockText ||
@@ -2052,8 +2119,11 @@ export async function monitorDingTalkProvider(
           (derivedMediaUrl && derivedMediaUrl === inferMediaUrlFromStandaloneText(trimmedText ?? ""))
             ? undefined
             : effectivePayloadText;
-        const normalizedText =
-          info.kind === "final" ? trimDeliveredPreludeFromReply(text) : text;
+        const trimmedFinal =
+          info.kind === "final"
+            ? trimDeliveredPreludeFromReply(text)
+            : { text, trimmedCount: 0 };
+        const normalizedText = trimmedFinal.text;
         const finalIsPreludeOnly = info.kind === "final" && !!text?.trim() && !normalizedText?.trim();
         if (finalIsPreludeOnly) {
           blockTextBufferState.finalTextDelivered = true;
@@ -2155,7 +2225,6 @@ export async function monitorDingTalkProvider(
         // Apply response prefix to first message only
         const shouldApplyPrefix =
           firstReply &&
-          !toolPreludeText &&
           account.responsePrefix &&
           !prefixApplied.has(sessionKey);
         if (shouldApplyPrefix) {
@@ -2171,10 +2240,6 @@ export async function monitorDingTalkProvider(
           });
           prefixApplied.add(sessionKey);
         }
-        if (!toolPreludeText) {
-          firstReply = false;
-        }
-
         // Convert markdown tables and normalize markdown line breaks for DingTalk rendering.
         if (account.replyMode === "markdown") {
           processedText = convertMarkdownForDingTalk(processedText, {
@@ -2184,6 +2249,7 @@ export async function monitorDingTalkProvider(
 
         // Send the text reply first (if there's any text content)
         if (processedText.trim()) {
+          firstReply = false;
           const textReplyResult = await sendReplyViaSessionWebhook(chat.sessionWebhook, processedText, {
             replyMode: account.replyMode,
             maxChars: account.maxChars,
@@ -2192,13 +2258,19 @@ export async function monitorDingTalkProvider(
           });
           if (textReplyResult.ok) {
             markDelivered("text_reply");
-            if (toolPreludeText) {
-              blockTextBufferState.deliveredToolPreludeText = processedText;
-            }
-            if (info.kind === "block" && !toolPreludeText) {
+            if (info.kind === "block") {
               blockTextBufferState.streamedBlockText = true;
             }
             if (info.kind === "final") {
+              if (trimmedFinal.trimmedCount > 0) {
+                log?.debug?.(
+                  {
+                    sessionKey,
+                    final_trimmed_preludes_count: trimmedFinal.trimmedCount,
+                  },
+                  "Trimmed delivered prelude(s) from final reply"
+                );
+              }
               blockTextBufferState.finalTextDelivered = true;
               runDeliveryState.finalDelivered = true;
             }
@@ -2222,13 +2294,19 @@ export async function monitorDingTalkProvider(
               });
               if (fallbackReply.ok) {
                 markDelivered("text_reply_fallback_text");
-                if (toolPreludeText) {
-                  blockTextBufferState.deliveredToolPreludeText = processedText;
-                }
-                if (info.kind === "block" && !toolPreludeText) {
+                if (info.kind === "block") {
                   blockTextBufferState.streamedBlockText = true;
                 }
                 if (info.kind === "final") {
+                  if (trimmedFinal.trimmedCount > 0) {
+                    log?.debug?.(
+                      {
+                        sessionKey,
+                        final_trimmed_preludes_count: trimmedFinal.trimmedCount,
+                      },
+                      "Trimmed delivered prelude(s) from final reply"
+                    );
+                  }
                   blockTextBufferState.finalTextDelivered = true;
                   runDeliveryState.finalDelivered = true;
                 }

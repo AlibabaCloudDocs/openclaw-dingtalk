@@ -511,7 +511,7 @@ describe("monitorDingTalkProvider", () => {
     expect(second.text.content).toBe("第一段\n第二段\n第三段");
   });
 
-  it("emits block-only tool prelude early and strips it from final summary", async () => {
+  it("does not flush prelude when no tool event and keeps final message intact", async () => {
     const runtime = getDingTalkRuntime();
     const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
     const dispatchMock =
@@ -534,16 +534,13 @@ describe("monitorDingTalkProvider", () => {
     await capturedCallback?.(createMockMessage());
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    const first = JSON.parse(mockFetch.mock.calls[0][1].body as string);
-    const second = JSON.parse(mockFetch.mock.calls[1][1].body as string);
-    expect(first.msgtype).toBe("text");
-    expect(first.text.content).toBe("我先帮你搜索一下相关信息。");
-    expect(second.msgtype).toBe("text");
-    expect(second.text.content).toBe("根据搜索结果，我找到了 5 个可用 RSS 源。");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toBe("我先帮你搜索一下相关信息。\n根据搜索结果，我找到了 5 个可用 RSS 源。");
   });
 
-  it("emits block-only tool prelude early and keeps synthetic final summary separate", async () => {
+  it("keeps block-only synthetic final as one intact message when no tool event", async () => {
     const runtime = getDingTalkRuntime();
     const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
     const dispatchMock =
@@ -566,13 +563,10 @@ describe("monitorDingTalkProvider", () => {
     await capturedCallback?.(createMockMessage());
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    const first = JSON.parse(mockFetch.mock.calls[0][1].body as string);
-    const second = JSON.parse(mockFetch.mock.calls[1][1].body as string);
-    expect(first.msgtype).toBe("text");
-    expect(first.text.content).toBe("我先帮你搜索一下相关信息。");
-    expect(second.msgtype).toBe("text");
-    expect(second.text.content).toBe("根据搜索结果，我找到了 5 个可用 RSS 源。");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toBe("我先帮你搜索一下相关信息。\n根据搜索结果，我找到了 5 个可用 RSS 源。");
   });
 
   it("uses summary-tail only when synthesizing final from many block updates", async () => {
@@ -610,16 +604,13 @@ describe("monitorDingTalkProvider", () => {
     await capturedCallback?.(createMockMessage());
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    const first = JSON.parse(mockFetch.mock.calls[0][1].body as string);
-    const second = JSON.parse(mockFetch.mock.calls[1][1].body as string);
-    expect(first.msgtype).toBe("text");
-    expect(first.text.content).toBe("我先帮你搜索一下相关信息。");
-    expect(second.msgtype).toBe("text");
-    expect(second.text.content).toContain("最终汇总如下：");
-    expect(second.text.content).toContain("## AI领域优质聚合网站及RSS源");
-    expect(second.text.content).not.toContain("让我检查一下 BestBlogs.dev 是否有 RSS 源。");
-    expect(second.text.content).not.toContain("让我尝试通过浏览器查看 BestBlogs.dev 网站。");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toContain("最终汇总如下：");
+    expect(body.text.content).toContain("## AI领域优质聚合网站及RSS源");
+    expect(body.text.content).not.toContain("让我检查一下 BestBlogs.dev 是否有 RSS 源。");
+    expect(body.text.content).not.toContain("让我尝试通过浏览器查看 BestBlogs.dev 网站。");
   });
 
   it("emits first-block loose prelude immediately in verbose off flow", async () => {
@@ -689,15 +680,53 @@ describe("monitorDingTalkProvider", () => {
     await capturedCallback?.(createMockMessage());
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.msgtype).toBe("text");
+    expect(body.text.content).toContain("我理解你希望定时从这些RSS源获取最新信息。我可以为你设置一个定时任务。");
+    expect(body.text.content).toContain("定时任务详情：");
+    expect(body.text.content).toContain("这个方案的优势：");
+    expect(body.text.content).toContain("最终汇总如下：");
+  });
+
+  it("flushes queued preludes on each tool call and trims all delivered preludes from final", async () => {
+    const runtime = getDingTalkRuntime();
+    const account = { ...BASIC_ACCOUNT, streamBlockTextToSession: true };
+    const dispatchMock =
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementationOnce(async (params: any) => {
+      const preludeOne = "我先帮你搜索一下相关信息。";
+      const preludeTwo = "我来继续检查第二步结果。";
+      await params.dispatcherOptions.deliver({ text: preludeOne }, { kind: "block" });
+      await params.dispatcherOptions.deliver({ text: "web_search: running..." }, { kind: "tool" });
+      await params.dispatcherOptions.deliver({ text: preludeTwo }, { kind: "block" });
+      await params.dispatcherOptions.deliver({ text: "code_interpreter: running..." }, { kind: "tool" });
+      await params.dispatcherOptions.deliver(
+        { text: `${preludeOne}\n${preludeTwo}\n最终结果：已完成。` },
+        { kind: "final" }
+      );
+      return { queuedFinal: true, counts: { tool: 2, block: 2, final: 1 } };
+    });
+
+    await monitorDingTalkProvider({
+      account,
+      config: mockConfig,
+    });
+
+    expect(capturedCallback).toBeTypeOf("function");
+    await capturedCallback?.(createMockMessage());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockFetch).toHaveBeenCalledTimes(3);
     const first = JSON.parse(mockFetch.mock.calls[0][1].body as string);
     const second = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    const third = JSON.parse(mockFetch.mock.calls[2][1].body as string);
     expect(first.msgtype).toBe("text");
-    expect(first.text.content).toBe("我理解你希望定时从这些RSS源获取最新信息。我可以为你设置一个定时任务。");
+    expect(first.text.content).toBe("我先帮你搜索一下相关信息。");
     expect(second.msgtype).toBe("text");
-    expect(second.text.content).toContain("定时任务详情：");
-    expect(second.text.content).toContain("这个方案的优势：");
-    expect(second.text.content).toContain("最终汇总如下：");
+    expect(second.text.content).toBe("我来继续检查第二步结果。");
+    expect(third.msgtype).toBe("text");
+    expect(third.text.content).toBe("最终结果：已完成。");
   });
 
   it("keeps newline between synthesized list sections", async () => {
