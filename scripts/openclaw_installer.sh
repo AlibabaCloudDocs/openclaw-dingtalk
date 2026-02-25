@@ -2820,21 +2820,29 @@ select_model_interactive() {
 
     echo ""
     local model_options=(
-        "glm-4.7               - GLM 4.7 推理模型（推荐）"
-        "kimi-k2.5             - Kimi K2.5 推理模型"
-        "qwen3-max-2026-01-23  - 高性能推理模型"
-        "qwen3-coder-plus      - 代码增强模型"
+        "qwen3.5-plus"
+        "qwen3-max-2026-01-23"
+        "qwen3-coder-next"
+        "MiniMax-M2.5"
+        "qwen3-coder-plus"
+        "glm-5"
+        "glm-4.7"
+        "kimi-k2.5"
     )
 
     local model_choice
     model_choice=$(clack_select "请选择 AI 模型" "${model_options[@]}")
 
     case $model_choice in
-        0) SELECTED_MODEL="dashscope/glm-4.7" ;;
-        1) SELECTED_MODEL="dashscope/kimi-k2.5" ;;
-        2) SELECTED_MODEL="dashscope/qwen3-max-2026-01-23" ;;
-        3) SELECTED_MODEL="dashscope/qwen3-coder-plus" ;;
-        *) SELECTED_MODEL="dashscope/glm-4.7" ;;
+        0) SELECTED_MODEL="dashscope/qwen3.5-plus" ;;
+        1) SELECTED_MODEL="dashscope/qwen3-max-2026-01-23" ;;
+        2) SELECTED_MODEL="dashscope/qwen3-coder-next" ;;
+        3) SELECTED_MODEL="dashscope/MiniMax-M2.5" ;;
+        4) SELECTED_MODEL="dashscope/qwen3-coder-plus" ;;
+        5) SELECTED_MODEL="dashscope/glm-5" ;;
+        6) SELECTED_MODEL="dashscope/glm-4.7" ;;
+        7) SELECTED_MODEL="dashscope/kimi-k2.5" ;;
+        *) SELECTED_MODEL="dashscope/qwen3.5-plus" ;;
     esac
 
     echo -e "${SUCCESS}◆${NC} 已选择模型: ${INFO}$SELECTED_MODEL${NC}"
@@ -3202,10 +3210,14 @@ configure_clawdbot_interactive() {
         "apiKey": "$escaped_dashscope_api_key",
         "api": "openai-completions",
         "models": [
-          { "id": "glm-4.7", "name": "GLM 4.7", "contextWindow": 200000, "maxTokens": 16384, "reasoning": true },
-          { "id": "kimi-k2.5", "name": "Kimi K2.5", "contextWindow": 200000, "maxTokens": 16384, "reasoning": true },
-          { "id": "qwen3-max-2026-01-23", "name": "Qwen3 Max Thinking", "contextWindow": 262144, "maxTokens": 32768, "reasoning": true, "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false } },
-          { "id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus", "contextWindow": 1000000, "maxTokens": 65536 }
+          { "id": "qwen3.5-plus", "name": "Qwen3.5 Plus", "contextWindow": 1000000, "maxTokens": 65536, "reasoning": true, "compat": { "thinkingFormat": "qwen", "supportsStrictMode": false, "supportsDeveloperRole": false } },
+          { "id": "qwen3-max-2026-01-23", "name": "Qwen3 Max Thinking", "contextWindow": 262144, "maxTokens": 65536, "reasoning": true, "compat": { "thinkingFormat": "qwen", "supportsStrictMode": false, "supportsDeveloperRole": false } },
+          { "id": "qwen3-coder-next", "name": "Qwen3 Coder Next", "contextWindow": 262144, "maxTokens": 65536, "reasoning": false },
+          { "id": "MiniMax-M2.5", "name": "MiniMax-M2.5", "contextWindow": 204800, "maxTokens": 131072, "reasoning": true, "compat": { "thinkingFormat": "qwen", "supportsStrictMode": false, "supportsDeveloperRole": false } },
+          { "id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus", "contextWindow": 1000000, "maxTokens": 65536, "reasoning": false },
+          { "id": "glm-5", "name": "GLM-5", "contextWindow": 202752, "maxTokens": 16384, "reasoning": true, "compat": { "thinkingFormat": "qwen", "supportsStrictMode": false, "supportsDeveloperRole": false } },
+          { "id": "glm-4.7", "name": "GLM-4.7", "contextWindow": 169984, "maxTokens": 16384, "reasoning": true, "compat": { "thinkingFormat": "qwen", "supportsStrictMode": false, "supportsDeveloperRole": false } },
+          { "id": "kimi-k2.5", "name": "Kimi K2.5", "contextWindow": 262144, "maxTokens": 262144, "reasoning": true, "compat": { "thinkingFormat": "qwen", "supportsStrictMode": false, "supportsDeveloperRole": false } }
         ]
       }
     }
@@ -5116,23 +5128,31 @@ config_update_model() {
     if [[ "$effective_base_url" == "$CODING_PLAN_URL" ]]; then
         # Coding Plan only supports these models
         local model_options=(
-            "dashscope/glm-4.7  - GLM 4.7（推荐）"
-            "dashscope/kimi-k2.5  - Kimi K2.5"
-            "dashscope/qwen3-max-2026-01-23  - Qwen3 Max Thinking"
-            "dashscope/qwen3-coder-plus  - Qwen3 Coder Plus"
+            "dashscope/qwen3.5-plus"
+            "dashscope/qwen3-max-2026-01-23"
+            "dashscope/qwen3-coder-next"
+            "dashscope/MiniMax-M2.5"
+            "dashscope/qwen3-coder-plus"
+            "dashscope/glm-5"
+            "dashscope/glm-4.7"
+            "dashscope/kimi-k2.5"
             "保留当前模型"
         )
         local model_ids=(
+            "dashscope/qwen3.5-plus"
+            "dashscope/qwen3-max-2026-01-23"
+            "dashscope/qwen3-coder-next"
+            "dashscope/MiniMax-M2.5"
+            "dashscope/qwen3-coder-plus"
+            "dashscope/glm-5"
             "dashscope/glm-4.7"
             "dashscope/kimi-k2.5"
-            "dashscope/qwen3-max-2026-01-23"
-            "dashscope/qwen3-coder-plus"
         )
 
         local model_choice
         model_choice=$(clack_select "选择模型" "${model_options[@]}")
 
-        if [[ $model_choice -lt 4 ]]; then
+        if [[ $model_choice -lt 8 ]]; then
             new_model="${model_ids[$model_choice]}"
         fi
         # else: selected "保留当前模型", new_model stays empty
@@ -5188,6 +5208,12 @@ config_update_model() {
         if [[ -n "$new_model" ]]; then
             config_set "agents.defaults.model.primary" "\"$new_model\""
             echo -e "${SUCCESS}✓${NC} 模型已更新为 $new_model"
+        fi
+
+        # Ensure models array exists for Coding Plan URL
+        if [[ "${new_base_url:-$current_base_url}" == "$CODING_PLAN_URL" ]]; then
+            local models_json='[{"id":"qwen3.5-plus","name":"Qwen3.5 Plus","contextWindow":1000000,"maxTokens":65536,"reasoning":true,"compat":{"thinkingFormat":"qwen","supportsStrictMode":false,"supportsDeveloperRole":false}},{"id":"qwen3-max-2026-01-23","name":"Qwen3 Max Thinking","contextWindow":262144,"maxTokens":65536,"reasoning":true,"compat":{"thinkingFormat":"qwen","supportsStrictMode":false,"supportsDeveloperRole":false}},{"id":"qwen3-coder-next","name":"Qwen3 Coder Next","contextWindow":262144,"maxTokens":65536,"reasoning":false},{"id":"MiniMax-M2.5","name":"MiniMax-M2.5","contextWindow":204800,"maxTokens":131072,"reasoning":true,"compat":{"thinkingFormat":"qwen","supportsStrictMode":false,"supportsDeveloperRole":false}},{"id":"qwen3-coder-plus","name":"Qwen3 Coder Plus","contextWindow":1000000,"maxTokens":65536,"reasoning":false},{"id":"glm-5","name":"GLM-5","contextWindow":202752,"maxTokens":16384,"reasoning":true,"compat":{"thinkingFormat":"qwen","supportsStrictMode":false,"supportsDeveloperRole":false}},{"id":"glm-4.7","name":"GLM-4.7","contextWindow":169984,"maxTokens":16384,"reasoning":true,"compat":{"thinkingFormat":"qwen","supportsStrictMode":false,"supportsDeveloperRole":false}},{"id":"kimi-k2.5","name":"Kimi K2.5","contextWindow":262144,"maxTokens":262144,"reasoning":true,"compat":{"thinkingFormat":"qwen","supportsStrictMode":false,"supportsDeveloperRole":false}}]'
+            config_set "models.providers.dashscope.models" "$models_json"
         fi
     else
         echo -e "${MUTED}未做任何更改${NC}"
