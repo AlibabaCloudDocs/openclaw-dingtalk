@@ -3101,7 +3101,7 @@ ${full_channels_block}
   "gateway": {
     "mode": "local",
     "port": 18789,
-    "bind": "lan",
+    "bind": "loopback",
     "auth": {
       "mode": "token",
       "token": "$gateway_token"
